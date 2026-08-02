@@ -1,0 +1,26 @@
+{
+  "name": "Strreamhub",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.33.2",
+  "dependencies": {
+    "better-auth": "^1.6.25",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "0.45.2",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3",
+    "drizzle-kit": "0.31.10",
+    "tsx": "^4.23.4",
+    "typescript": "^7.0.2"
+  }
+}
