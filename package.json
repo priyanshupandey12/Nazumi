@@ -13,14 +13,18 @@
   "packageManager": "pnpm@10.33.2",
   "dependencies": {
     "better-auth": "^1.6.25",
+    "bullmq": "^6.1.2",
+    "cloudinary": "^2.10.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "0.45.2",
     "express": "^5.2.1",
+    "multer": "^2.2.0",
     "pg": "^8.22.0",
     "uuidv7": "^1.2.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.3",
     "drizzle-kit": "0.31.10",
