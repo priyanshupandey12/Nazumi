@@ -5,12 +5,21 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "worker": "tsx src/worker/worker.ts",
+    "worker:dev": "tsx watch src/worker/worker.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "ffmpeg-static",
+      "msgpackr-extract"
+    ]
+  },
   "dependencies": {
     "better-auth": "^1.6.25",
     "bullmq": "^6.1.2",
@@ -18,6 +27,8 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "0.45.2",
     "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
     "ioredis": "^6.0.0",
     "multer": "^2.2.0",
     "pg": "^8.22.0",
@@ -25,6 +36,7 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
+    "@types/ffprobe-static": "^2.0.3",
     "@types/multer": "^2.2.0",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.3",

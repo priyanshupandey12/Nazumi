@@ -1,13 +1,20 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 import multer from "multer";
+
+
+const UPLOAD_DIR = path.resolve("./tmp/uploads");
+mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "./tmp");
+    cb(null, UPLOAD_DIR);
   },
 
   filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${file.originalname}`;
-    cb(null, uniqueName);
+ 
+    const safeName = path.basename(file.originalname).replace(/[^\w.-]/g, "_");
+    cb(null, `${Date.now()}-${safeName}`);
   },
 });
 

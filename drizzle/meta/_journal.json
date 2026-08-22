@@ -15,6 +15,13 @@
       "when": 1786129747684,
       "tag": "0001_many_firebird",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786800000000,
+      "tag": "0002_add_video_renditions",
+      "breakpoints": true
     }
   ]
 }

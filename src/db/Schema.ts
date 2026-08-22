@@ -89,8 +89,9 @@ export const video= pgTable("video",{
    title:text("title").notNull(),
    description:text("description"),
    thumbnailUrl:text("thumbnail_url"),
-   videoUrl:text("video_url").notNull(),
-   status:videoStatusEnum("processing").notNull().default("processing"),
+   videoUrl:text("video_url"),
+   status:videoStatusEnum("status").notNull().default("processing"),
+   processingError:text("processing_error"),
    duration: integer("duration"),
    isPublished:boolean("is_published").default(false).notNull(),
    category:text("category"),
@@ -102,6 +103,21 @@ export const video= pgTable("video",{
   .$onUpdate(() => new Date())
   .notNull(),
 })
+
+
+export const videoRendition = pgTable("video_rendition",{
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  videoId: uuid("video_id").notNull().references(() => video.id, { onDelete: "cascade" }),
+
+  name: text("name").notNull(),
+  height: integer("height").notNull(),
+  bandwidth: integer("bandwidth").notNull(),
+  playlistUrl: text("playlist_url").notNull(),
+  segmentCount: integer("segment_count").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [index("video_rendition_videoId_idx").on(table.videoId)],
+)
 
 export const livestreaming= pgTable("livestreaming",{
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
@@ -188,8 +204,16 @@ export const videoRelations = relations(video,({one,many})=>({
     references:[user.id]
   }),
   likes: many(like),
-  comments: many(comment)
+  comments: many(comment),
+  renditions: many(videoRendition)
 }))
+
+export const videoRenditionRelations = relations(videoRendition, ({ one }) => ({
+  video: one(video, {
+    fields: [videoRendition.videoId],
+    references: [video.id],
+  }),
+}));
 
 export const likeRelations = relations(like, ({ one }) => ({
   video: one(video, {

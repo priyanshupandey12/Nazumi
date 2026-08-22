@@ -1,3 +1,6 @@
+# Uploads and ffmpeg transcode output
+tmp/
+
 # Logs
 logs
 *.log

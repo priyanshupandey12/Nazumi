@@ -1,5 +1,9 @@
 {
   // Visit https://aka.ms/tsconfig to read more about this file
+  // Scoped to ./src on purpose: HLS segments are also named ".ts", so a default
+  // "**/*" include would try to compile transcoder output as TypeScript.
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tmp", "drizzle"],
   "compilerOptions": {
     // File Layout
     "rootDir": "./src",
@@ -9,11 +13,10 @@
     // See also https://aka.ms/tsconfig/module
     "module": "nodenext",
     "target": "esnext",
-    "types": [],
-    // For nodejs:
-    // "lib": ["esnext"],
-    // "types": ["node"],
-    // and npm install -D @types/node
+    // The worker uses node builtins (child_process, fs/promises, path), so the
+    // node types have to be in scope.
+    "lib": ["esnext"],
+    "types": ["node"],
 
     // Other Outputs
     "sourceMap": true,

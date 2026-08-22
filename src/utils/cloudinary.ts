@@ -19,9 +19,55 @@ const uploadToCloudinary = async (filePath:string, folder:string)=>{
         });
         return result;
     } catch (error) {
-        throw new Error("Error uploading to Cloudinary");
-        return null;
+        throw new Error(`Error uploading to Cloudinary: ${describe(error)}`, { cause: error });
     }
+}
+
+
+const uploadRawToCloudinary = async (filePath: string, publicId: string) => {
+    try {
+        if (!filePath || !publicId) {
+            throw new Error("Invalid file path or public ID");
+        }
+        return await cloudinary.v2.uploader.upload(filePath, {
+            resource_type: "raw",
+            public_id: publicId,
+            use_filename: false,
+            unique_filename: false,
+            overwrite: true,
+        });
+    } catch (error) {
+        throw new Error(
+            `Error uploading raw asset "${publicId}" to Cloudinary: ${describe(error)}`,
+            { cause: error },
+        );
+    }
+}
+
+
+const deleteRawFolderFromCloudinary = async (prefix: string) => {
+    try {
+        if (!prefix) {
+            throw new Error("Invalid prefix");
+        }
+        return await cloudinary.v2.api.delete_resources_by_prefix(prefix, {
+            resource_type: "raw",
+        });
+    } catch (error) {
+        throw new Error(
+            `Error deleting raw folder "${prefix}" from Cloudinary: ${describe(error)}`,
+            { cause: error },
+        );
+    }
+}
+
+
+const describe = (error: unknown): string => {
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === "object" && "message" in error) {
+        return String((error as { message: unknown }).message);
+    }
+    return String(error);
 }
 
 const deleteFromCloudinary = async (publicId:string)=>{
@@ -36,11 +82,15 @@ const deleteFromCloudinary = async (publicId:string)=>{
         }
 
         return result;
-        
+
     } catch (error) {
-        throw new Error("Error deleting from Cloudinary");
-        return null;
+        throw new Error(`Error deleting from Cloudinary: ${describe(error)}`, { cause: error });
     }
 }
 
-export { uploadToCloudinary, deleteFromCloudinary };
+export {
+    uploadToCloudinary,
+    uploadRawToCloudinary,
+    deleteFromCloudinary,
+    deleteRawFolderFromCloudinary,
+};

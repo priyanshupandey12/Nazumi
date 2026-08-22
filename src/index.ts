@@ -2,12 +2,16 @@ import 'dotenv/config'
 import express from "express";
 import { toNodeHandler,fromNodeHeaders  } from "better-auth/node";
 import { auth } from './lib/auth.js';
+import videoRoutes from './routes/video.routes.js';
 
 
 const app = express();
 
 app.all("/api/auth/*splat", toNodeHandler(auth));
-app.use(express.json());
+
+app.use(express.json({ limit: "10mb" }));
+
+app.use("/api/videos", videoRoutes);
 
 app.get("/api/health", (req: express.Request, res: express.Response) => {
   res.json({ status: "healthy", timestamp: new Date() });
