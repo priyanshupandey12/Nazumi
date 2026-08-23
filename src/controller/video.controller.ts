@@ -2,13 +2,13 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import type { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { eq } from "drizzle-orm";
+import { and, eq ,lt , desc} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
 import { video, videoRendition } from "../db/Schema.js";
 import { uploadToCloudinary } from "../utils/cloudinary.js";
 import { enqueueVideoProcessing } from "../queue/video.queue.js";
-
+export type Video = typeof video.$inferSelect;
 /*
 Client
   |
@@ -162,4 +162,114 @@ const getVideoStatus = async (req: Request, res: Response) => {
 
 const discard = (filePath: string) => rm(filePath, { force: true }).catch(() => {});
 
-export { uploadVideo, getVideoStatus };
+
+
+const getAllUploadedVideo =async(req: Request, res: Response)=>{
+    const session = await auth.api.getSession({
+        headers: fromNodeHeaders(req.headers),
+      });
+
+      if(!session){
+        return res.status(401).json({ message: "Unauthorized - Please sign in first" });
+      }
+
+      const videos = await db.select().from(video)
+      .where(and(eq(video.creatorId, session.user.id), eq(video.isPublished, true)))
+;
+      
+      if(!videos) {
+        return res.status(404).json({ message: "No videos found" });
+      }
+
+      return res.json({ videos });
+}
+
+
+const getUploadedVideoById =async(req: Request, res: Response)=>{
+
+    const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+      if(!id) {
+        return res.status(400).json({ message: "Video id is required" });
+      }
+    const session = await auth.api.getSession({
+        headers: fromNodeHeaders(req.headers),
+      });
+
+      if(!session){
+        return res.status(401).json({ message: "Unauthorized - Please sign in first" });
+      }
+
+
+
+      const videos = await db.select().from(video)
+      .where(and(eq(video.id, id), eq(video.creatorId, session.user.id), eq(video.isPublished, true)));
+
+      if(!videos) {
+        return res.status(404).json({ message: "Video not found" });
+      }
+
+      return res.json({ videos });
+}
+
+
+
+const getAllVideo = async (req: Request, res: Response) => {
+  const limit = Math.min(
+    parseInt(req.query.limit as string) || 10,
+    50
+  );
+
+  const cursor = req.query.cursor
+    ? (req.query.cursor as string)
+    : null;
+
+  let queryResults: Video[];
+
+  if (cursor) {
+    queryResults = await db
+      .select()
+      .from(video)
+      .where(lt(video.id, cursor))
+      .orderBy(desc(video.id))
+      .limit(limit);
+  } else {
+    queryResults = await db
+      .select()
+      .from(video)
+      .orderBy(desc(video.id))
+      .limit(limit);
+  }
+
+     const lastVideo = queryResults.at(-1);
+
+   const nextCursor = lastVideo?.id ?? null;
+
+return res.status(200).json({
+  success: true,
+  data: queryResults,
+  meta: {
+    nextCursor,
+    count: queryResults.length,
+  },
+});
+};
+
+
+const getVideoById = async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : undefined;
+     if(!id) {
+      return res.status(400).json({ message: "Video id is required" });
+     }
+
+     const videoData = await db.select().from(video).where(eq(video.id, id)).limit(1);
+
+      if(!videoData || videoData.length === 0) {
+        return res.status(404).json({ message: "Video not found" });
+      }
+
+      return res.json({ video: videoData[0] });
+}
+
+
+export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById };
