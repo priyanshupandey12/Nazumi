@@ -1,11 +1,25 @@
 import 'dotenv/config'
 import express from "express";
+import cors from "cors";
 import { toNodeHandler,fromNodeHeaders  } from "better-auth/node";
 import { auth } from './lib/auth.js';
 import videoRoutes from './routes/video.routes.js';
 
 
 const app = express();
+
+
+const allowedOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  }),
+);
 
 app.all("/api/auth/*splat", toNodeHandler(auth));
 

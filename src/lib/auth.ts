@@ -9,6 +9,11 @@ export const auth = betterAuth({
     provider: "pg", 
     schema: schema,
   }),
+
+  trustedOrigins: (process.env.CORS_ORIGINS ?? "http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID || "",

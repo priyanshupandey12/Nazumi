@@ -24,6 +24,7 @@
     "better-auth": "^1.6.25",
     "bullmq": "^6.1.2",
     "cloudinary": "^2.10.0",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "drizzle-orm": "0.45.2",
     "express": "^5.2.1",
@@ -35,6 +36,7 @@
     "uuidv7": "^1.2.1"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/ffprobe-static": "^2.0.3",
     "@types/multer": "^2.2.0",

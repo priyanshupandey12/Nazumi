@@ -2,12 +2,12 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import type { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { and, eq ,lt , desc} from "drizzle-orm";
+import { and, eq ,lt , desc, sql} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
 import { video, videoRendition } from "../db/Schema.js";
 import { uploadToCloudinary } from "../utils/cloudinary.js";
-import { enqueueVideoProcessing } from "../queue/video.queue.js";
+import { enqueueVideoProcessing, getVideoJobSnapshot } from "../queue/video.queue.js";
 export type Video = typeof video.$inferSelect;
 /*
 Client
@@ -84,7 +84,29 @@ const uploadVideo = async (req: Request, res: Response) => {
       throw new Error("Failed to create video row");
     }
 
-    await enqueueVideoProcessing({ videoId: created.id, sourcePath });
+    try {
+      await enqueueVideoProcessing({ videoId: created.id, sourcePath });
+    } catch (queueError) {
+   
+      await db
+        .update(video)
+        .set({
+          status: "failed",
+          processingError:
+            "Could not queue transcoding. The processing queue is unreachable.",
+        })
+        .where(eq(video.id, created.id))
+        .catch(() => {});
+
+      await discard(sourcePath);
+      console.error("[upload] enqueue failed:", queueError);
+      return res.status(503).json({
+        message:
+          "Upload saved but transcoding could not be queued. Please try again once the processing queue is available.",
+        videoId: created.id,
+        status: "failed",
+      });
+    }
 
     return res.status(202).json({
       message: "Upload accepted. Transcoding has been queued.",
@@ -150,12 +172,17 @@ const getVideoStatus = async (req: Request, res: Response) => {
     .from(videoRendition)
     .where(eq(videoRendition.videoId, id));
 
+
+  const progress =
+    row.status === "processing" ? await getVideoJobSnapshot(id) : null;
+
   return res.json({
     id: row.id,
     status: row.status,
     videoUrl: row.videoUrl,
     duration: row.duration,
     renditions,
+    progress,
     ...(row.status === "failed" ? { error: row.processingError } : {}),
   });
 };
@@ -173,13 +200,12 @@ const getAllUploadedVideo =async(req: Request, res: Response)=>{
         return res.status(401).json({ message: "Unauthorized - Please sign in first" });
       }
 
-      const videos = await db.select().from(video)
-      .where(and(eq(video.creatorId, session.user.id), eq(video.isPublished, true)))
-;
-      
-      if(!videos) {
-        return res.status(404).json({ message: "No videos found" });
-      }
+  
+      const videos = await db
+        .select()
+        .from(video)
+        .where(eq(video.creatorId, session.user.id))
+        .orderBy(desc(video.createdAt));
 
       return res.json({ videos });
 }
@@ -202,10 +228,12 @@ const getUploadedVideoById =async(req: Request, res: Response)=>{
 
 
 
-      const videos = await db.select().from(video)
-      .where(and(eq(video.id, id), eq(video.creatorId, session.user.id), eq(video.isPublished, true)));
+      const videos = await db
+        .select()
+        .from(video)
+        .where(and(eq(video.id, id), eq(video.creatorId, session.user.id)));
 
-      if(!videos) {
+      if (videos.length === 0) {
         return res.status(404).json({ message: "Video not found" });
       }
 
@@ -224,22 +252,15 @@ const getAllVideo = async (req: Request, res: Response) => {
     ? (req.query.cursor as string)
     : null;
 
-  let queryResults: Video[];
+ 
+  const visible = and(eq(video.isPublished, true), eq(video.status, "ready"));
 
-  if (cursor) {
-    queryResults = await db
-      .select()
-      .from(video)
-      .where(lt(video.id, cursor))
-      .orderBy(desc(video.id))
-      .limit(limit);
-  } else {
-    queryResults = await db
-      .select()
-      .from(video)
-      .orderBy(desc(video.id))
-      .limit(limit);
-  }
+  const queryResults: Video[] = await db
+    .select()
+    .from(video)
+    .where(cursor ? and(visible, lt(video.id, cursor)) : visible)
+    .orderBy(desc(video.id))
+    .limit(limit);
 
      const lastVideo = queryResults.at(-1);
 
@@ -257,19 +278,168 @@ return res.status(200).json({
 
 
 const getVideoById = async (req: Request, res: Response) => {
-    const id = typeof req.params.id === "string" ? req.params.id : undefined;
-     if(!id) {
-      return res.status(400).json({ message: "Video id is required" });
-     }
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
 
-     const videoData = await db.select().from(video).where(eq(video.id, id)).limit(1);
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
 
-      if(!videoData || videoData.length === 0) {
-        return res.status(404).json({ message: "Video not found" });
-      }
+  const [videoData] = await db.select().from(video).where(eq(video.id, id)).limit(1);
 
-      return res.json({ video: videoData[0] });
-}
+  if (!videoData) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  
+  if (!videoData.isPublished || videoData.status !== "ready") {
+    const session = await auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+    });
+
+    if (!session || session.user.id !== videoData.creatorId) {
+      return res.status(404).json({ message: "Video not found" });
+    }
+  }
+
+  return res.json({ video: videoData });
+};
 
 
-export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById };
+/*
+
+  Client
+  |
+  | POST /videos/:id/view
+  v
+Published + ready check
+  |
+  v
+view_count = view_count + 1
+
+*/
+
+const recordVideoView = async (req: Request, res: Response) => {
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const [row] = await db
+    .select({
+      id: video.id,
+      isPublished: video.isPublished,
+      status: video.status,
+    })
+    .from(video)
+    .where(eq(video.id, id))
+    .limit(1);
+
+  if (!row) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  if (!row.isPublished || row.status !== "ready") {
+    return res.status(409).json({ message: "Video is not published" });
+  }
+
+ 
+  const result = await db.execute(
+    sql`update ${video} set view_count = view_count + 1 where ${video.id} = ${id} returning view_count`,
+  );
+
+  const rows = (result as unknown as { rows?: Array<{ view_count?: number }> }).rows ?? [];
+
+  return res.json({ viewCount: rows[0]?.view_count ?? null });
+};
+
+
+
+/*
+
+  Client
+  |
+  | PATCH /videos/:id  { title?, description?, category?, tags?, isPublished? }
+  v
+Ownership check
+  |
+  +--> Publishing requires status === "ready"
+  |
+  v
+Database update
+
+*/
+
+const updateVideo = async (req: Request, res: Response) => {
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
+
+  if (!session) {
+    return res.status(401).json({ message: "Unauthorized - Please sign in first" });
+  }
+
+  const [existing] = await db
+    .select({
+      id: video.id,
+      creatorId: video.creatorId,
+      status: video.status,
+    })
+    .from(video)
+    .where(eq(video.id, id))
+    .limit(1);
+
+  if (!existing) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  if (existing.creatorId !== session.user.id) {
+    return res.status(403).json({ message: "You can only edit your own videos" });
+  }
+
+  const { title, description, category, tags, isPublished } = req.body ?? {};
+
+  const patch: Partial<typeof video.$inferInsert> = {};
+
+  if (typeof title === "string") {
+    if (!title.trim()) {
+      return res.status(400).json({ message: "Title cannot be empty" });
+    }
+    patch.title = title.trim();
+  }
+
+  if (typeof description === "string") patch.description = description.trim() || null;
+  if (typeof category === "string") patch.category = category.trim() || null;
+  if (typeof tags === "string") patch.tags = tags.trim() || null;
+
+  if (typeof isPublished === "boolean") {
+    // Publishing a half-transcoded video would put a dead player on the feed.
+    if (isPublished && existing.status !== "ready") {
+      return res.status(409).json({
+        message: `Video is ${existing.status} and cannot be published yet`,
+      });
+    }
+    patch.isPublished = isPublished;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ message: "No supported fields to update" });
+  }
+
+  const [updated] = await db
+    .update(video)
+    .set(patch)
+    .where(eq(video.id, id))
+    .returning();
+
+  return res.json({ video: updated });
+};
+
+
+export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView };

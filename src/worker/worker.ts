@@ -35,9 +35,13 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
     await rm(outputDir, { recursive: true, force: true });
 
     log(job, "transcoding");
-    const result = await transcodeToHls(sourcePath, outputDir, (percent) => {
 
-      void job.updateProgress(Math.round(percent * 0.7));
+    await job.updateProgress({ phase: "transcoding", percent: 0 });
+    const result = await transcodeToHls(sourcePath, outputDir, (percent) => {
+      void job.updateProgress({
+        phase: "transcoding",
+        percent: Math.round(percent * 0.7),
+      });
     });
 
     log(
@@ -52,7 +56,10 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
       result.rungs,
       cloudinaryPrefix,
       (percent) => {
-        void job.updateProgress(70 + Math.round(percent * 0.29));
+        void job.updateProgress({
+          phase: "uploading",
+          percent: 70 + Math.round(percent * 0.29),
+        });
       },
     );
 
@@ -80,7 +87,7 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
         .where(eq(video.id, videoId));
     });
 
-    await job.updateProgress(100);
+    await job.updateProgress({ phase: "finalizing", percent: 100 });
     log(job, `ready -> ${uploaded.masterPlaylistUrl}`);
 
     return {
