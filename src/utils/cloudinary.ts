@@ -52,6 +52,8 @@ const deleteRawFolderFromCloudinary = async (prefix: string) => {
         }
         return await cloudinary.v2.api.delete_resources_by_prefix(prefix, {
             resource_type: "raw",
+        
+            invalidate: true,
         });
     } catch (error) {
         throw new Error(
@@ -59,6 +61,17 @@ const deleteRawFolderFromCloudinary = async (prefix: string) => {
             { cause: error },
         );
     }
+}
+
+
+
+const publicIdFromUrl = (url: string): string | null => {
+    const match = /\/upload\/(?:v\d+\/)?(.+)$/.exec(url);
+    const withExtension = match?.[1];
+    if (!withExtension) return null;
+
+ 
+    return withExtension.replace(/\.[^./]+$/, "") || null;
 }
 
 
@@ -75,7 +88,9 @@ const deleteFromCloudinary = async (publicId:string)=>{
         if(!publicId){
             throw new Error("Invalid public ID");
         }
-        const result = await cloudinary.v2.uploader.destroy(publicId);
+        const result = await cloudinary.v2.uploader.destroy(publicId, {
+            invalidate: true,
+        });
 
         if(result.result !== "ok"){
             throw new Error("Failed to delete from Cloudinary");
@@ -93,4 +108,5 @@ export {
     uploadRawToCloudinary,
     deleteFromCloudinary,
     deleteRawFolderFromCloudinary,
+    publicIdFromUrl,
 };

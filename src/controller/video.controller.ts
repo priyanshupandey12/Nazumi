@@ -6,8 +6,17 @@ import { and, eq ,lt , desc, sql} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
 import { video, videoRendition } from "../db/Schema.js";
-import { uploadToCloudinary } from "../utils/cloudinary.js";
-import { enqueueVideoProcessing, getVideoJobSnapshot } from "../queue/video.queue.js";
+import {
+  uploadToCloudinary,
+  deleteFromCloudinary,
+  deleteRawFolderFromCloudinary,
+  publicIdFromUrl,
+} from "../utils/cloudinary.js";
+import {
+  enqueueVideoProcessing,
+  getVideoJobSnapshot,
+  removeVideoJob,
+} from "../queue/video.queue.js";
 export type Video = typeof video.$inferSelect;
 /*
 Client
@@ -442,4 +451,91 @@ const updateVideo = async (req: Request, res: Response) => {
 };
 
 
-export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView };
+/*
+
+  Client
+  |
+  | DELETE /videos/:id
+  v
+Ownership check
+  |
+  +---- Queued job -> removed (so nothing transcodes a deleted video)
+  |
+  +---- Source file -> discarded
+  |
+  +---- HLS folder + thumbnail -> removed from Cloudinary
+  |
+  v
+Database row deleted (renditions cascade)
+
+*/
+
+const deleteVideo = async (req: Request, res: Response) => {
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const session = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
+
+  if (!session) {
+    return res.status(401).json({ message: "Unauthorized - Please sign in first" });
+  }
+
+  const [existing] = await db
+    .select({
+      id: video.id,
+      creatorId: video.creatorId,
+      thumbnailUrl: video.thumbnailUrl,
+    })
+    .from(video)
+    .where(eq(video.id, id))
+    .limit(1);
+
+  if (!existing) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  if (existing.creatorId !== session.user.id) {
+    return res.status(403).json({ message: "You can only delete your own videos" });
+  }
+
+
+  const job = await removeVideoJob(id);
+
+  if (job.data?.sourcePath) {
+    await discard(path.resolve(job.data.sourcePath));
+  }
+
+
+  await deleteRawFolderFromCloudinary(`videos/${id}/hls`).catch((error) => {
+    console.error(`[delete] cloudinary hls cleanup failed for ${id}:`, error);
+  });
+
+  if (existing.thumbnailUrl) {
+    const publicId = publicIdFromUrl(existing.thumbnailUrl);
+    if (publicId) {
+      await deleteFromCloudinary(publicId).catch((error) => {
+        console.error(`[delete] cloudinary thumbnail cleanup failed for ${id}:`, error);
+      });
+    }
+  }
+
+
+  await db.delete(video).where(eq(video.id, id));
+
+  if (!job.removed) {
+    console.warn(
+      `[delete] video ${id} was deleted while its job was still running; ` +
+        "the worker will error out on this job and stop.",
+    );
+  }
+
+  return res.json({ id, message: "Video deleted" });
+};
+
+
+export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView, deleteVideo };

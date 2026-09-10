@@ -30,6 +30,38 @@ export const enqueueVideoProcessing = (data: ProcessVideoJob) =>
 
 
 
+export type RemovedVideoJob = {
+
+  removed: boolean;
+ 
+  data: ProcessVideoJob | null;
+};
+
+
+export const removeVideoJob = async (
+  videoId: string,
+): Promise<RemovedVideoJob> => {
+  let job;
+  try {
+    job = await videoQueue.getJob(videoJobId(videoId));
+  } catch {
+    return { removed: false, data: null };
+  }
+
+ 
+  if (!job) return { removed: true, data: null };
+
+  const data = job.data ?? null;
+
+  try {
+    await job.remove();
+    return { removed: true, data };
+  } catch {
+    return { removed: false, data };
+  }
+};
+
+
 export const VIDEO_JOB_PHASES = [
   "queued",
   "transcoding",

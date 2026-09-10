@@ -9,6 +9,7 @@ import {
   getUploadedVideoById,
   updateVideo,
   recordVideoView,
+  deleteVideo,
 } from "../controller/video.controller.js";
 
 const router: IRouter = Router();
@@ -21,5 +22,6 @@ router.get("/:id/status", getVideoStatus);
 router.post("/:id/view", recordVideoView);
 router.get("/:id", getVideoById);
 router.patch("/:id", updateVideo);
+router.delete("/:id", deleteVideo);
 
 export default router;
