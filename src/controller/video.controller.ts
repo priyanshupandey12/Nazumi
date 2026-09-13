@@ -2,10 +2,14 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import type { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { and, eq ,lt , desc, sql} from "drizzle-orm";
+import { and, eq ,lt , desc, sql, inArray} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
-import { video, videoRendition } from "../db/Schema.js";
+import { subscriber, user, video, videoRendition } from "../db/Schema.js";
+import { currentUser } from "../lib/access.js";
+import { countLikes, hasLiked } from "./like.controller.js";
+import { countComments } from "./comment.controller.js";
+import { countSubscribers, isSubscribedTo } from "./creator.controller.js";
 import {
   uploadToCloudinary,
   deleteFromCloudinary,
@@ -262,7 +266,29 @@ const getAllVideo = async (req: Request, res: Response) => {
     : null;
 
  
-  const visible = and(eq(video.isPublished, true), eq(video.status, "ready"));
+  let visible = and(eq(video.isPublished, true), eq(video.status, "ready"));
+
+  // `?following=true` narrows the feed to creators this viewer subscribes to.
+  if (req.query.following === "true") {
+    const viewer = await currentUser(req);
+
+    if (!viewer) {
+      return res
+        .status(401)
+        .json({ message: "Unauthorized - Please sign in first" });
+    }
+
+    visible = and(
+      visible,
+      inArray(
+        video.creatorId,
+        db
+          .select({ id: subscriber.creatorId })
+          .from(subscriber)
+          .where(eq(subscriber.userId, viewer.id)),
+      ),
+    );
+  }
 
   const queryResults: Video[] = await db
     .select()
@@ -271,9 +297,10 @@ const getAllVideo = async (req: Request, res: Response) => {
     .orderBy(desc(video.id))
     .limit(limit);
 
-     const lastVideo = queryResults.at(-1);
-
-   const nextCursor = lastVideo?.id ?? null;
+  // Only hand back a cursor when the page was full. Returning the last id of a
+  // short page promises a next page that does not exist.
+  const nextCursor =
+    queryResults.length === limit ? (queryResults.at(-1)?.id ?? null) : null;
 
 return res.status(200).json({
   success: true,
@@ -293,24 +320,46 @@ const getVideoById = async (req: Request, res: Response) => {
     return res.status(400).json({ message: "Video id is required" });
   }
 
+  // Read the session up front: it decides both whether a draft is visible and
+  // what `isLiked` / `isSubscribed` mean.
+  const viewer = await currentUser(req);
+
   const [videoData] = await db.select().from(video).where(eq(video.id, id)).limit(1);
 
   if (!videoData) {
     return res.status(404).json({ message: "Video not found" });
   }
 
-  
   if (!videoData.isPublished || videoData.status !== "ready") {
-    const session = await auth.api.getSession({
-      headers: fromNodeHeaders(req.headers),
-    });
-
-    if (!session || session.user.id !== videoData.creatorId) {
+    if (!viewer || viewer.id !== videoData.creatorId) {
       return res.status(404).json({ message: "Video not found" });
     }
   }
 
-  return res.json({ video: videoData });
+  const [creator] = await db
+    .select({ id: user.id, name: user.name, image: user.image })
+    .from(user)
+    .where(eq(user.id, videoData.creatorId))
+    .limit(1);
+
+  // The watch page needs all of this at once, so it is gathered here rather
+  // than leaving the client to fan out four more requests.
+  const [likeCount, commentCount, isLiked, subscriberCount, isSubscribed] =
+    await Promise.all([
+      countLikes(id),
+      countComments(id),
+      hasLiked(id, viewer?.id ?? null),
+      countSubscribers(videoData.creatorId),
+      isSubscribedTo(videoData.creatorId, viewer?.id ?? null),
+    ]);
+
+  return res.json({
+    video: videoData,
+    creator: creator
+      ? { ...creator, subscriberCount, isSubscribed, isSelf: viewer?.id === creator.id }
+      : null,
+    engagement: { likeCount, commentCount, isLiked },
+  });
 };
 
 

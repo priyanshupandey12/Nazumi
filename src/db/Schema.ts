@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm";
-import { pgTable, text, timestamp, boolean, index ,uuid,pgEnum, type AnyPgColumn, integer} from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, index, uniqueIndex ,uuid,pgEnum, type AnyPgColumn, integer} from "drizzle-orm/pg-core";
 import { uuidv7 } from "uuidv7";
 
 
@@ -150,7 +150,14 @@ export const like= pgTable("like",{
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   videoId: uuid("video_id").notNull().references(() => video.id, { onDelete: "cascade" }),
-})
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [
+
+  uniqueIndex("like_user_video_idx").on(table.userId, table.videoId),
+  index("like_videoId_idx").on(table.videoId),
+],
+)
 
 export const comment= pgTable("comment",{
  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),  
@@ -162,7 +169,12 @@ export const comment= pgTable("comment",{
     { onDelete: "cascade" }
   ),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-})
+},
+(table) => [
+  index("comment_videoId_idx").on(table.videoId),
+  index("comment_parentCommentId_idx").on(table.parentCommentId),
+],
+)
 
 export const  membership= pgTable("membership",{
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
@@ -178,7 +190,12 @@ export const subscriber= pgTable("subscriber",{
   userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   creatorId: text("creator_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   subscriptionDate: timestamp("subscription_date").defaultNow().notNull(),
-})
+},
+(table) => [
+  uniqueIndex("subscriber_user_creator_idx").on(table.userId, table.creatorId),
+  index("subscriber_creatorId_idx").on(table.creatorId),
+],
+)
 
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),

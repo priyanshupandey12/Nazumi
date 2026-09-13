@@ -1,5 +1,7 @@
 import { Router, type IRouter } from "express";
 import upload from "../middlware/multer.js";
+import { likeVideo, unlikeVideo } from "../controller/like.controller.js";
+import { listComments, createComment } from "../controller/comment.controller.js";
 import {
   uploadVideo,
   getVideoStatus,
@@ -20,6 +22,13 @@ router.get("/mine", getAllUploadedVideo);
 router.get("/mine/:id", getUploadedVideoById);
 router.get("/:id/status", getVideoStatus);
 router.post("/:id/view", recordVideoView);
+
+router.post("/:id/like", likeVideo);
+router.delete("/:id/like", unlikeVideo);
+
+router.get("/:id/comments", listComments);
+router.post("/:id/comments", createComment);
+
 router.get("/:id", getVideoById);
 router.patch("/:id", updateVideo);
 router.delete("/:id", deleteVideo);

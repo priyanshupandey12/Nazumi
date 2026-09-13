@@ -4,6 +4,8 @@ import cors from "cors";
 import { toNodeHandler,fromNodeHeaders  } from "better-auth/node";
 import { auth } from './lib/auth.js';
 import videoRoutes from './routes/video.routes.js';
+import commentRoutes from './routes/comment.routes.js';
+import creatorRoutes from './routes/creator.routes.js';
 
 
 const app = express();
@@ -26,6 +28,8 @@ app.all("/api/auth/*splat", toNodeHandler(auth));
 app.use(express.json({ limit: "10mb" }));
 
 app.use("/api/videos", videoRoutes);
+app.use("/api/comments", commentRoutes);
+app.use("/api/creators", creatorRoutes);
 
 app.get("/api/health", (req: express.Request, res: express.Response) => {
   res.json({ status: "healthy", timestamp: new Date() });
