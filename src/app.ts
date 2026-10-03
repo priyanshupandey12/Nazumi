@@ -6,6 +6,10 @@ import { auth } from './lib/auth.js';
 import videoRoutes from './routes/video.routes.js';
 import commentRoutes from './routes/comment.routes.js';
 import creatorRoutes from './routes/creator.routes.js';
+import notificationRoutes from './routes/notification.routes.js';
+import profileRoutes from './routes/profile.routes.js';
+import reportRoutes from './routes/report.routes.js';
+import adminRoutes from './routes/admin.routes.js';
 import { uploadErrorHandler } from './middlware/errors.js';
 
 /**
@@ -14,6 +18,10 @@ import { uploadErrorHandler } from './middlware/errors.js';
  */
 export const createApp = (): Express => {
   const app = express();
+
+  // Rate limiting keys anonymous callers by address, which is only correct
+  // once Express trusts the proxy that set X-Forwarded-For.
+  app.set("trust proxy", 1);
 
   const allowedOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:5173")
     .split(",")
@@ -34,6 +42,10 @@ export const createApp = (): Express => {
   app.use("/api/videos", videoRoutes);
   app.use("/api/comments", commentRoutes);
   app.use("/api/creators", creatorRoutes);
+  app.use("/api/notifications", notificationRoutes);
+  app.use("/api/me", profileRoutes);
+  app.use("/api/reports", reportRoutes);
+  app.use("/api/admin", adminRoutes);
 
   app.get("/api/health", (req: express.Request, res: express.Response) => {
     res.json({ status: "healthy", timestamp: new Date() });

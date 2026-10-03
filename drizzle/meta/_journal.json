@@ -36,6 +36,34 @@
       "when": 1789298620141,
       "tag": "0004_video_search_index",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791013946832,
+      "tag": "0005_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791015312048,
+      "tag": "0006_channel_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791016713888,
+      "tag": "0007_reports",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791017901061,
+      "tag": "0008_transcode_notifications",
+      "breakpoints": true
     }
   ]
 }

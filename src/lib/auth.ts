@@ -27,6 +27,19 @@ plugins: [openAPI()],
         type: "string",
         defaultValue: "user",
       },
+      // Channel identity rides on the session so the navbar matches the rest
+      // of the app without a second request. `input: false` keeps them out of
+      // better-auth's own write paths — PATCH /api/me owns them.
+      displayName: {
+        type: "string",
+        required: false,
+        input: false,
+      },
+      avatarUrl: {
+        type: "string",
+        required: false,
+        input: false,
+      },
     },
   },
 });

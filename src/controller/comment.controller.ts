@@ -3,6 +3,8 @@ import { and, asc, count, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { db } from "../db/db.js";
 import { comment, user, video } from "../db/Schema.js";
 import { currentUser, loadVisibleVideo } from "../lib/access.js";
+import { notifyComment } from "../lib/notify.js";
+import { resolveIdentity } from "../lib/identity.js";
 
 /*
 
@@ -34,6 +36,8 @@ const commentFields = {
   authorId: user.id,
   authorName: user.name,
   authorImage: user.image,
+  authorDisplayName: user.displayName,
+  authorAvatarUrl: user.avatarUrl,
 };
 
 type CommentRow = {
@@ -44,6 +48,29 @@ type CommentRow = {
   authorId: string;
   authorName: string;
   authorImage: string | null;
+  authorDisplayName: string | null;
+  authorAvatarUrl: string | null;
+};
+
+/** The poster's own identity, so a fresh comment matches the rest of the list. */
+const authorIdentity = async (
+  id: string,
+  fallbackName: string,
+  fallbackImage: string | null,
+) => {
+  const [row] = await db
+    .select({ displayName: user.displayName, avatarUrl: user.avatarUrl })
+    .from(user)
+    .where(eq(user.id, id))
+    .limit(1);
+
+  return resolveIdentity({
+    id,
+    name: fallbackName,
+    image: fallbackImage,
+    displayName: row?.displayName ?? null,
+    avatarUrl: row?.avatarUrl ?? null,
+  });
 };
 
 const shape = (row: CommentRow) => ({
@@ -51,11 +78,13 @@ const shape = (row: CommentRow) => ({
   message: row.message,
   createdAt: row.createdAt,
   parentCommentId: row.parentCommentId,
-  author: {
+  author: resolveIdentity({
     id: row.authorId,
     name: row.authorName,
     image: row.authorImage,
-  },
+    displayName: row.authorDisplayName,
+    avatarUrl: row.authorAvatarUrl,
+  }),
 });
 
 export const countComments = async (videoId: string): Promise<number> => {
@@ -202,17 +231,31 @@ const createComment = async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Could not post that comment" });
   }
 
+  let parentAuthorId: string | null = null;
+  if (parentId) {
+    const [parentAuthor] = await db
+      .select({ userId: comment.userId })
+      .from(comment)
+      .where(eq(comment.id, parentId))
+      .limit(1);
+    parentAuthorId = parentAuthor?.userId ?? null;
+  }
+
+  await notifyComment({
+    actorId: viewer.id,
+    videoId: id,
+    videoCreatorId: target.creatorId,
+    commentId: created.id,
+    parentAuthorId,
+  });
+
   return res.status(201).json({
     comment: {
       id: created.id,
       message: message.trim(),
       createdAt: created.createdAt,
       parentCommentId: parentId,
-      author: {
-        id: viewer.id,
-        name: viewer.name,
-        image: viewer.image ?? null,
-      },
+      author: await authorIdentity(viewer.id, viewer.name, viewer.image ?? null),
       replies: [],
     },
   });

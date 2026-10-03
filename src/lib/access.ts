@@ -10,12 +10,32 @@ import { video } from "../db/Schema.js";
  * several engagement reads are public but answer differently once we know who
  * is asking — `isLiked` and `isSubscribed` only mean something for a viewer.
  */
-export const currentUser = async (req: Request) => {
-  const session = await auth.api.getSession({
-    headers: fromNodeHeaders(req.headers),
-  });
+type SessionUser = Awaited<ReturnType<typeof auth.api.getSession>> extends
+  | { user: infer U }
+  | null
+  ? U
+  : never;
 
-  return session?.user ?? null;
+/** Where the resolved session is cached for the life of one request. */
+const CACHE = Symbol.for("streamhub.currentUser");
+
+type CachingRequest = Request & {
+  [CACHE]?: Promise<SessionUser | null>;
+};
+
+export const currentUser = async (req: Request): Promise<SessionUser | null> => {
+  const cached = (req as CachingRequest)[CACHE];
+  if (cached) return cached;
+
+  // Memoised per request: rate limiting, route guards and the controller all
+  // ask who is calling, and each lookup is a database round trip.
+  const pending = auth.api
+    .getSession({ headers: fromNodeHeaders(req.headers) })
+    .then((session) => session?.user ?? null);
+
+  (req as CachingRequest)[CACHE] = pending;
+
+  return pending;
 };
 
 export type VisibleVideo = {

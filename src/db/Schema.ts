@@ -4,6 +4,28 @@ import { uuidv7 } from "uuidv7";
 
 
 export const videoStatusEnum = pgEnum("video_status",["processing","ready","failed"])
+export const notificationTypeEnum = pgEnum("notification_type", [
+  "new_video",
+  "comment",
+  "reply",
+  // Sent to the creator by the worker when a transcode settles. Without these
+  // an upload finishes in silence and nobody knows to publish it.
+  "video_ready",
+  "video_failed",
+])
+export const reportReasonEnum = pgEnum("report_reason", [
+  "spam",
+  "harassment",
+  "sexual",
+  "violence",
+  "misinformation",
+  "other",
+])
+export const reportStatusEnum = pgEnum("report_status", [
+  "open",
+  "dismissed",
+  "actioned",
+])
 export const livestreamStatusEnum = pgEnum("livestream_status", [
   "live",
   "offline",
@@ -16,6 +38,12 @@ export const user = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").default(false).notNull(),
   image: text("image"),
+  // Channel identity, kept separate from the Google-sourced `name` and `image`
+  // above so a later sign-in cannot overwrite what the creator chose. Null
+  // means "use whatever Google gave us".
+  displayName: text("display_name"),
+  bio: text("bio"),
+  avatarUrl: text("avatar_url"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at")
     .defaultNow()
@@ -94,6 +122,9 @@ export const video= pgTable("video",{
    processingError:text("processing_error"),
    duration: integer("duration"),
    isPublished:boolean("is_published").default(false).notNull(),
+   // Set once, the first time it goes public. Subscribers are notified only
+   // then, so unpublishing and republishing cannot notify them twice.
+   publishedAt: timestamp("published_at"),
    category:text("category"),
    tags:text("tags"),
    viewCount: integer("view_count").default(0).notNull(),
@@ -196,6 +227,86 @@ export const subscriber= pgTable("subscriber",{
   index("subscriber_creatorId_idx").on(table.creatorId),
 ],
 )
+
+export const notification = pgTable("notification", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  // Who receives it.
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  // Who caused it. Null once that account is gone, which the UI reads as
+  // "someone" rather than dropping the notification.
+  actorId: text("actor_id").references(() => user.id, { onDelete: "set null" }),
+  type: notificationTypeEnum("type").notNull(),
+  videoId: uuid("video_id").references(() => video.id, { onDelete: "cascade" }),
+  commentId: uuid("comment_id").references(() => comment.id, { onDelete: "cascade" }),
+  isRead: boolean("is_read").default(false).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [
+  index("notification_userId_idx").on(table.userId),
+  // The bell asks for the unread count on every poll.
+  index("notification_unread_idx").on(table.userId, table.isRead),
+],
+)
+
+export const report = pgTable("report", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  reporterId: text("reporter_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  // Exactly one of these is set. Both cascade, so a report disappears with
+  // whatever it was about rather than pointing at nothing.
+  videoId: uuid("video_id").references(() => video.id, { onDelete: "cascade" }),
+  commentId: uuid("comment_id").references(() => comment.id, { onDelete: "cascade" }),
+  reason: reportReasonEnum("reason").notNull(),
+  details: text("details"),
+  status: reportStatusEnum("status").default("open").notNull(),
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [
+  index("report_status_idx").on(table.status),
+  index("report_videoId_idx").on(table.videoId),
+  index("report_commentId_idx").on(table.commentId),
+  // One report per person per target: re-reporting the same thing should not
+  // inflate a queue that a creator has to work through by hand.
+  uniqueIndex("report_reporter_video_idx").on(table.reporterId, table.videoId),
+  uniqueIndex("report_reporter_comment_idx").on(table.reporterId, table.commentId),
+],
+)
+
+export const reportRelations = relations(report, ({ one }) => ({
+  reporter: one(user, {
+    fields: [report.reporterId],
+    references: [user.id],
+  }),
+  video: one(video, {
+    fields: [report.videoId],
+    references: [video.id],
+  }),
+  comment: one(comment, {
+    fields: [report.commentId],
+    references: [comment.id],
+  }),
+}))
+
+export const notificationRelations = relations(notification, ({ one }) => ({
+  recipient: one(user, {
+    fields: [notification.userId],
+    references: [user.id],
+    relationName: "notificationRecipient",
+  }),
+  actor: one(user, {
+    fields: [notification.actorId],
+    references: [user.id],
+    relationName: "notificationActor",
+  }),
+  video: one(video, {
+    fields: [notification.videoId],
+    references: [video.id],
+  }),
+  comment: one(comment, {
+    fields: [notification.commentId],
+    references: [comment.id],
+  }),
+}))
 
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),

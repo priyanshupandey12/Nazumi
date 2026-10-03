@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { db } from "../src/db/db.js";
 import { videoQueue } from "../src/queue/video.queue.js";
+import { redis } from "../src/lib/redis.js";
 
 /**
  * Cloudinary is the one dependency tests must never reach: it is a paid,
@@ -59,12 +60,25 @@ beforeAll(async () => {
   await resetDatabase();
 });
 
+/**
+ * Rate-limit buckets live in Redis and outlive a single test file. The
+ * anonymous ones are keyed by address, so every test shares 127.0.0.1 — a file
+ * that exhausts a bucket would throttle whichever file runs next inside the
+ * same window.
+ */
+const resetRateLimits = async () => {
+  const keys = await redis.keys("rl:*");
+  if (keys.length > 0) await redis.del(...keys);
+};
+
 beforeEach(async () => {
   await resetDatabase();
+  await resetRateLimits();
 });
 
 afterAll(async () => {
   // Jobs queued by upload tests would otherwise outlive the run.
   await videoQueue.obliterate({ force: true }).catch(() => {});
   await videoQueue.close().catch(() => {});
+  await redis.quit().catch(() => {});
 });

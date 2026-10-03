@@ -11,6 +11,7 @@ import { deleteRawFolderFromCloudinary } from "../utils/cloudinary.js";
 import { transcodeToHls } from "./ffmpeg.js";
 import { uploadHlsDirectory } from "./hls.upload.js";
 import { VIDEO_QUEUE_NAME, type ProcessVideoJob } from "../queue/video.queue.js";
+import { notifyTranscodeFinished } from "../lib/notify.js";
 
 
 const CONCURRENCY = Number(process.env.VIDEO_WORKER_CONCURRENCY ?? 1);
@@ -88,6 +89,21 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
     });
 
     await job.updateProgress({ phase: "finalizing", percent: 100 });
+
+    const [owner] = await db
+      .select({ creatorId: video.creatorId })
+      .from(video)
+      .where(eq(video.id, videoId))
+      .limit(1);
+
+    if (owner) {
+      await notifyTranscodeFinished({
+        creatorId: owner.creatorId,
+        videoId,
+        outcome: "ready",
+      });
+    }
+
     log(job, `ready -> ${uploaded.masterPlaylistUrl}`);
 
     return {
@@ -150,13 +166,25 @@ worker.on("failed", async (job, error) => {
   const videoId = job.data?.videoId;
   if (!videoId) return;
 
-  await db
+  const [failed] = await db
     .update(video)
     .set({ status: "failed", processingError: message(error).slice(0, 1000) })
     .where(eq(video.id, videoId))
+    .returning({ creatorId: video.creatorId })
     .catch((dbError) => {
       console.error(`[worker] could not mark video ${videoId} failed: ${message(dbError)}`);
+      return [];
     });
+
+  // A failure is exactly when the creator needs telling, since there is
+  // nothing on the feed to notice.
+  if (failed) {
+    await notifyTranscodeFinished({
+      creatorId: failed.creatorId,
+      videoId,
+      outcome: "failed",
+    });
+  }
 
 
   await rm(job.data.sourcePath, { force: true }).catch(() => {});

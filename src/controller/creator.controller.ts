@@ -3,6 +3,7 @@ import { and, count, desc, eq, lt } from "drizzle-orm";
 import { db } from "../db/db.js";
 import { subscriber, user, video } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
+import { toPublicIdentity } from "../lib/identity.js";
 import { listingColumns, likeCounts, commentCounts } from "../lib/listing.js";
 
 /*
@@ -55,13 +56,19 @@ const loadCreator = async (creatorId: string) => {
       id: user.id,
       name: user.name,
       image: user.image,
+      displayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      bio: user.bio,
       createdAt: user.createdAt,
     })
     .from(user)
     .where(eq(user.id, creatorId))
     .limit(1);
 
-  return row ?? null;
+  if (!row) return null;
+
+  // Channel identity wins over whatever the account was created with.
+  return { ...toPublicIdentity(row), bio: row.bio, createdAt: row.createdAt };
 };
 
 const getCreator = async (req: Request, res: Response) => {

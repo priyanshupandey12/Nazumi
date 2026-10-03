@@ -8,6 +8,8 @@ import { db } from "../db/db.js";
 import { comment, like, subscriber, user, video, videoRendition } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
 import { listingColumns, likeCounts, commentCounts } from "../lib/listing.js";
+import { notifyNewVideo } from "../lib/notify.js";
+import { identityColumns, toPublicIdentity } from "../lib/identity.js";
 import { countLikes, hasLiked } from "./like.controller.js";
 import { countComments } from "./comment.controller.js";
 import { countSubscribers, isSubscribedTo } from "./creator.controller.js";
@@ -491,11 +493,13 @@ const getVideoById = async (req: Request, res: Response) => {
     }
   }
 
-  const [creator] = await db
-    .select({ id: user.id, name: user.name, image: user.image })
+  const [creatorRow] = await db
+    .select(identityColumns)
     .from(user)
     .where(eq(user.id, videoData.creatorId))
     .limit(1);
+
+  const creator = creatorRow ? toPublicIdentity(creatorRow) : undefined;
 
 
   const [likeCount, commentCount, isLiked, subscriberCount, isSubscribed] =
@@ -603,6 +607,7 @@ const updateVideo = async (req: Request, res: Response) => {
       creatorId: video.creatorId,
       status: video.status,
       thumbnailUrl: video.thumbnailUrl,
+      publishedAt: video.publishedAt,
     })
     .from(video)
     .where(eq(video.id, id))
@@ -653,6 +658,10 @@ const updateVideo = async (req: Request, res: Response) => {
     replacedThumbnail = true;
   }
 
+  // Set when this call is the one that first makes the video public, so
+  // subscribers are told once the row is safely written.
+  let announceTo: string | null = null;
+
   if (typeof isPublished === "boolean") {
     // Publishing a half-transcoded video would put a dead player on the feed.
     if (isPublished && existing.status !== "ready") {
@@ -661,6 +670,11 @@ const updateVideo = async (req: Request, res: Response) => {
       });
     }
     patch.isPublished = isPublished;
+
+    if (isPublished && !existing.publishedAt) {
+      patch.publishedAt = new Date();
+      announceTo = existing.creatorId;
+    }
   }
 
   if (Object.keys(patch).length === 0) {
@@ -672,6 +686,10 @@ const updateVideo = async (req: Request, res: Response) => {
     .set(patch)
     .where(eq(video.id, id))
     .returning();
+
+  if (announceTo) {
+    await notifyNewVideo({ creatorId: announceTo, videoId: id });
+  }
 
   // Only once the row is safely updated: losing the old image after a failed
   // write would leave the video pointing at nothing.
