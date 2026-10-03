@@ -107,6 +107,16 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
   }
 };
 
+
+const discardSource = async (job: Job<ProcessVideoJob>) => {
+  const { sourcePath } = job.data;
+  if (!sourcePath) return;
+
+  await rm(sourcePath, { force: true }).catch((error) => {
+    log(job, `could not remove source "${sourcePath}": ${message(error)}`);
+  });
+};
+
 const worker = new Worker<ProcessVideoJob>(VIDEO_QUEUE_NAME, processVideo, {
   connection: redisConnection,
   concurrency: CONCURRENCY,
@@ -121,7 +131,8 @@ worker.on("ready", () => {
   );
 });
 
-worker.on("completed", (job) => {
+worker.on("completed", async (job) => {
+  await discardSource(job);
   console.log(`[worker] job ${job.id} completed`);
 });
 

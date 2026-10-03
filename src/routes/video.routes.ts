@@ -12,15 +12,20 @@ import {
   updateVideo,
   recordVideoView,
   deleteVideo,
+  getCategories,
+  getRelatedVideos,
 } from "../controller/video.controller.js";
 
 const router: IRouter = Router();
 
 router.post("/", upload.single("video"), uploadVideo);
 router.get("/", getAllVideo);
+
+router.get("/categories", getCategories);
 router.get("/mine", getAllUploadedVideo);
 router.get("/mine/:id", getUploadedVideoById);
 router.get("/:id/status", getVideoStatus);
+router.get("/:id/related", getRelatedVideos);
 router.post("/:id/view", recordVideoView);
 
 router.post("/:id/like", likeVideo);

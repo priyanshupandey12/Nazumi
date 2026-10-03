@@ -6,6 +6,7 @@ import { auth } from './lib/auth.js';
 import videoRoutes from './routes/video.routes.js';
 import commentRoutes from './routes/comment.routes.js';
 import creatorRoutes from './routes/creator.routes.js';
+import { uploadErrorHandler } from './middlware/errors.js';
 
 
 const app = express();
@@ -50,6 +51,9 @@ app.get("/api/protected-test", async (req: express.Request, res: express.Respons
     session: session.session,
   });
 });
+
+
+app.use(uploadErrorHandler);
 
 app.listen(process.env.PORT, () => {
     console.log(`Server is running on port ${process.env.PORT}`);

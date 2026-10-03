@@ -6,6 +6,14 @@ import multer from "multer";
 const UPLOAD_DIR = path.resolve("./tmp/uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
+/** A file the upload endpoint will not accept, answered as 400 rather than 500. */
+export class UnsupportedMediaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsupportedMediaError";
+  }
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOAD_DIR);
@@ -23,17 +31,17 @@ const upload = multer({
 
   limits: {
     fileSize: 500 * 1024 * 1024, // 500 MB
+
+ 
+    fieldSize: 12 * 1024 * 1024, 
   },
 
   fileFilter: (req, file, cb) => {
-    const allowed =
-      file.mimetype.startsWith("image/") ||
-      file.mimetype.startsWith("video/");
 
-    if (allowed) {
+    if (file.mimetype.startsWith("video/")) {
       cb(null, true);
     } else {
-      cb(new Error("Only images and videos are allowed."));
+      cb(new UnsupportedMediaError("Only video files can be uploaded."));
     }
   },
 });

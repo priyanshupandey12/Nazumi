@@ -2,7 +2,7 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import type { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { and, eq ,lt , desc, sql, inArray} from "drizzle-orm";
+import { and, eq ,lt , desc, sql, inArray, ne, or, count, isNotNull} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
 import { subscriber, user, video, videoRendition } from "../db/Schema.js";
@@ -166,6 +166,7 @@ const getVideoStatus = async (req: Request, res: Response) => {
       videoUrl: video.videoUrl,
       duration: video.duration,
       processingError: video.processingError,
+      creatorId: video.creatorId,
     })
     .from(video)
     .where(eq(video.id, id))
@@ -189,6 +190,16 @@ const getVideoStatus = async (req: Request, res: Response) => {
   const progress =
     row.status === "processing" ? await getVideoJobSnapshot(id) : null;
 
+
+  let error: string | undefined;
+  if (row.status === "failed") {
+    const viewer = await currentUser(req);
+    error =
+      viewer?.id === row.creatorId
+        ? (row.processingError ?? "Transcoding failed.")
+        : "This video could not be processed.";
+  }
+
   return res.json({
     id: row.id,
     status: row.status,
@@ -196,7 +207,7 @@ const getVideoStatus = async (req: Request, res: Response) => {
     duration: row.duration,
     renditions,
     progress,
-    ...(row.status === "failed" ? { error: row.processingError } : {}),
+    ...(error ? { error } : {}),
   });
 };
 
@@ -255,6 +266,17 @@ const getUploadedVideoById =async(req: Request, res: Response)=>{
 
 
 
+
+const searchDocument = sql`to_tsvector('english',
+  coalesce(${video.title}, '') || ' ' ||
+  coalesce(${video.description}, '') || ' ' ||
+  coalesce(${video.tags}, ''))`;
+
+
+const matchesTag = (tag: string) =>
+  sql`lower(',' || replace(coalesce(${video.tags}, ''), ' ', '') || ',')
+      like ${'%,' + tag.toLowerCase().replace(/\s+/g, "") + ',%'}`;
+
 const getAllVideo = async (req: Request, res: Response) => {
   const limit = Math.min(
     parseInt(req.query.limit as string) || 10,
@@ -290,6 +312,25 @@ const getAllVideo = async (req: Request, res: Response) => {
     );
   }
 
+
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q) {
+    visible = and(visible, sql`${searchDocument} @@ plainto_tsquery('english', ${q})`);
+  }
+
+
+  const category =
+    typeof req.query.category === "string" ? req.query.category.trim() : "";
+  if (category) {
+    visible = and(visible, sql`lower(${video.category}) = lower(${category})`);
+  }
+
+  
+  const tag = typeof req.query.tag === "string" ? req.query.tag.trim() : "";
+  if (tag) {
+    visible = and(visible, matchesTag(tag));
+  }
+
   const queryResults: Video[] = await db
     .select()
     .from(video)
@@ -297,8 +338,7 @@ const getAllVideo = async (req: Request, res: Response) => {
     .orderBy(desc(video.id))
     .limit(limit);
 
-  // Only hand back a cursor when the page was full. Returning the last id of a
-  // short page promises a next page that does not exist.
+
   const nextCursor =
     queryResults.length === limit ? (queryResults.at(-1)?.id ?? null) : null;
 
@@ -313,6 +353,117 @@ return res.status(200).json({
 };
 
 
+/*
+
+  Client
+  |
+  | GET /videos/categories
+  v
+Distinct categories across published videos, most used first
+
+*/
+
+const getCategories = async (_req: Request, res: Response) => {
+  const rows = await db
+    .select({ name: video.category, count: count() })
+    .from(video)
+    .where(
+      and(
+        eq(video.isPublished, true),
+        eq(video.status, "ready"),
+        isNotNull(video.category),
+      ),
+    )
+    .groupBy(video.category)
+    .orderBy(desc(count()));
+
+  // A category of "" survives the NOT NULL check but is not worth showing.
+  return res.json({ categories: rows.filter((row) => row.name?.trim()) });
+};
+
+/*
+
+  Client
+  |
+  | GET /videos/:id/related
+  v
+Same category or a shared tag
+  |
+  +--> topped up with recent videos when that is thin
+  |
+  v
+{ videos: [...] }
+
+*/
+
+const getRelatedVideos = async (req: Request, res: Response) => {
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const [source] = await db
+    .select({ id: video.id, category: video.category, tags: video.tags })
+    .from(video)
+    .where(eq(video.id, id))
+    .limit(1);
+
+  if (!source) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit as string) || 12, 24);
+
+  const visible = and(
+    eq(video.isPublished, true),
+    eq(video.status, "ready"),
+    ne(video.id, id),
+  );
+
+  const tags = (source.tags ?? "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const matches = [
+    ...(source.category?.trim()
+      ? [sql`lower(${video.category}) = lower(${source.category})`]
+      : []),
+    ...tags.map((tag) => matchesTag(tag)),
+  ];
+
+  const related: Video[] = matches.length
+    ? await db
+        .select()
+        .from(video)
+        .where(and(visible, or(...matches)))
+        .orderBy(desc(video.id))
+        .limit(limit)
+    : [];
+
+  // An empty rail is worse than a loosely related one, so short results get
+  // topped up with whatever is recent.
+  if (related.length < limit) {
+    const seen = new Set(related.map((row) => row.id));
+    const recent = await db
+      .select()
+      .from(video)
+      .where(visible)
+      .orderBy(desc(video.id))
+      .limit(limit * 2);
+
+    for (const row of recent) {
+      if (related.length >= limit) break;
+      if (!seen.has(row.id)) related.push(row);
+    }
+  }
+
+  return res.json({ videos: related });
+};
+
+
 const getVideoById = async (req: Request, res: Response) => {
   const id = typeof req.params.id === "string" ? req.params.id : undefined;
 
@@ -320,8 +471,7 @@ const getVideoById = async (req: Request, res: Response) => {
     return res.status(400).json({ message: "Video id is required" });
   }
 
-  // Read the session up front: it decides both whether a draft is visible and
-  // what `isLiked` / `isSubscribed` mean.
+
   const viewer = await currentUser(req);
 
   const [videoData] = await db.select().from(video).where(eq(video.id, id)).limit(1);
@@ -342,8 +492,7 @@ const getVideoById = async (req: Request, res: Response) => {
     .where(eq(user.id, videoData.creatorId))
     .limit(1);
 
-  // The watch page needs all of this at once, so it is gathered here rather
-  // than leaving the client to fan out four more requests.
+
   const [likeCount, commentCount, isLiked, subscriberCount, isSubscribed] =
     await Promise.all([
       countLikes(id),
@@ -587,4 +736,4 @@ const deleteVideo = async (req: Request, res: Response) => {
 };
 
 
-export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView, deleteVideo };
+export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView, deleteVideo, getCategories, getRelatedVideos };
