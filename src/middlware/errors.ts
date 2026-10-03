@@ -52,6 +52,18 @@ export const uploadErrorHandler = (
     return res.status(400).json({ message: error.message });
   }
 
+  // express.json() rejects an oversized body with its own error type; without
+  // this it would fall through to a 500 for what is a client-side mistake.
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { type?: string }).type === "entity.too.large"
+  ) {
+    return res.status(413).json({
+      message: "That request is too large. Try a smaller image.",
+    });
+  }
+
 
   console.error("[api] unhandled error:", error);
   return res.status(500).json({ message: "Something went wrong on our end." });

@@ -261,3 +261,83 @@ describe("DELETE /api/videos/:id", () => {
     expect(await db.select().from(video).where(eq(video.id, row.id))).toHaveLength(1);
   });
 });
+
+describe("engagement counts on listings", () => {
+  it("carries like and comment counts on each feed card", async () => {
+    const creator = await createUser();
+    const fan = await createUser();
+    const row = await createVideo(creator.id, { title: "Popular" });
+    await createVideo(creator.id, { title: "Quiet" });
+
+    await request(app).post(`/api/videos/${row.id}/like`).set("Cookie", fan.cookie);
+    await request(app)
+      .post(`/api/videos/${row.id}/comments`)
+      .set("Cookie", fan.cookie)
+      .send({ message: "Good one" });
+
+    const res = await request(app).get("/api/videos");
+    const byTitle = Object.fromEntries(
+      res.body.data.map((v: { title: string; likeCount: number; commentCount: number }) => [
+        v.title,
+        { likes: v.likeCount, comments: v.commentCount },
+      ]),
+    );
+
+    expect(byTitle.Popular).toEqual({ likes: 1, comments: 1 });
+    expect(byTitle.Quiet).toEqual({ likes: 0, comments: 0 });
+  });
+
+  it("carries them on the creator dashboard listing too", async () => {
+    const creator = await createUser();
+    const fan = await createUser();
+    const row = await createVideo(creator.id);
+    await request(app).post(`/api/videos/${row.id}/like`).set("Cookie", fan.cookie);
+
+    const res = await request(app).get("/api/videos/mine").set("Cookie", creator.cookie);
+
+    expect(res.body.videos[0].likeCount).toBe(1);
+  });
+});
+
+describe("PATCH /api/videos/:id thumbnail", () => {
+  it("stores a new thumbnail sent as a data URL", async () => {
+    const creator = await createUser();
+    const row = await createVideo(creator.id, { thumbnailUrl: null });
+
+    const res = await request(app)
+      .patch(`/api/videos/${row.id}`)
+      .set("Cookie", creator.cookie)
+      .send({ thumbnailUrl: "data:image/png;base64,AAAA" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.video.thumbnailUrl).toMatch(/^https:\/\/res\.cloudinary\.test\//);
+  });
+
+  it("clears the thumbnail when sent null", async () => {
+    const creator = await createUser();
+    const row = await createVideo(creator.id, {
+      thumbnailUrl: "https://res.cloudinary.test/image/upload/thumbnails/old.jpg",
+    });
+
+    const res = await request(app)
+      .patch(`/api/videos/${row.id}`)
+      .set("Cookie", creator.cookie)
+      .send({ thumbnailUrl: null });
+
+    expect(res.body.video.thumbnailUrl).toBeNull();
+  });
+
+  it("ignores an https URL echoed back, rather than re-uploading it", async () => {
+    const creator = await createUser();
+    const original = "https://res.cloudinary.test/image/upload/thumbnails/keep.jpg";
+    const row = await createVideo(creator.id, { thumbnailUrl: original });
+
+    const res = await request(app)
+      .patch(`/api/videos/${row.id}`)
+      .set("Cookie", creator.cookie)
+      .send({ title: "Renamed", thumbnailUrl: original });
+
+    expect(res.body.video.thumbnailUrl).toBe(original);
+    expect(res.body.video.title).toBe("Renamed");
+  });
+});

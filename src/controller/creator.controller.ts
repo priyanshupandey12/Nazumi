@@ -3,6 +3,7 @@ import { and, count, desc, eq, lt } from "drizzle-orm";
 import { db } from "../db/db.js";
 import { subscriber, user, video } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
+import { listingColumns, likeCounts, commentCounts } from "../lib/listing.js";
 
 /*
 
@@ -92,8 +93,10 @@ const getCreator = async (req: Request, res: Response) => {
   );
 
   const videos = await db
-    .select()
+    .select(listingColumns)
     .from(video)
+    .leftJoin(likeCounts, eq(likeCounts.videoId, video.id))
+    .leftJoin(commentCounts, eq(commentCounts.videoId, video.id))
     .where(cursor ? and(visible, lt(video.id, cursor)) : visible)
     .orderBy(desc(video.id))
     .limit(limit);

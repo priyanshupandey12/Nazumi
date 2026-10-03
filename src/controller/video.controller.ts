@@ -2,11 +2,12 @@ import path from "node:path";
 import { rm } from "node:fs/promises";
 import type { Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
-import { and, eq ,lt , desc, sql, inArray, ne, or, count, isNotNull} from "drizzle-orm";
+import { and, eq ,lt , desc, sql, inArray, ne, or, count, isNotNull, getTableColumns} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
-import { subscriber, user, video, videoRendition } from "../db/Schema.js";
+import { comment, like, subscriber, user, video, videoRendition } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
+import { listingColumns, likeCounts, commentCounts } from "../lib/listing.js";
 import { countLikes, hasLiked } from "./like.controller.js";
 import { countComments } from "./comment.controller.js";
 import { countSubscribers, isSubscribedTo } from "./creator.controller.js";
@@ -226,8 +227,10 @@ const getAllUploadedVideo =async(req: Request, res: Response)=>{
 
   
       const videos = await db
-        .select()
+        .select(listingColumns)
         .from(video)
+        .leftJoin(likeCounts, eq(likeCounts.videoId, video.id))
+        .leftJoin(commentCounts, eq(commentCounts.videoId, video.id))
         .where(eq(video.creatorId, session.user.id))
         .orderBy(desc(video.createdAt));
 
@@ -331,9 +334,11 @@ const getAllVideo = async (req: Request, res: Response) => {
     visible = and(visible, matchesTag(tag));
   }
 
-  const queryResults: Video[] = await db
-    .select()
+  const queryResults = await db
+    .select(listingColumns)
     .from(video)
+    .leftJoin(likeCounts, eq(likeCounts.videoId, video.id))
+    .leftJoin(commentCounts, eq(commentCounts.videoId, video.id))
     .where(cursor ? and(visible, lt(video.id, cursor)) : visible)
     .orderBy(desc(video.id))
     .limit(limit);
@@ -597,6 +602,7 @@ const updateVideo = async (req: Request, res: Response) => {
       id: video.id,
       creatorId: video.creatorId,
       status: video.status,
+      thumbnailUrl: video.thumbnailUrl,
     })
     .from(video)
     .where(eq(video.id, id))
@@ -610,7 +616,8 @@ const updateVideo = async (req: Request, res: Response) => {
     return res.status(403).json({ message: "You can only edit your own videos" });
   }
 
-  const { title, description, category, tags, isPublished } = req.body ?? {};
+  const { title, description, category, tags, isPublished, thumbnailUrl } =
+    req.body ?? {};
 
   const patch: Partial<typeof video.$inferInsert> = {};
 
@@ -624,6 +631,27 @@ const updateVideo = async (req: Request, res: Response) => {
   if (typeof description === "string") patch.description = description.trim() || null;
   if (typeof category === "string") patch.category = category.trim() || null;
   if (typeof tags === "string") patch.tags = tags.trim() || null;
+
+  // A new thumbnail arrives as a data URL; an explicit null clears it. Any
+  // other value is ignored so a client echoing the existing https URL back
+  // does not trigger a pointless re-upload.
+  let replacedThumbnail = false;
+
+  if (typeof thumbnailUrl === "string" && thumbnailUrl.startsWith("data:image")) {
+    try {
+      const uploaded = await uploadToCloudinary(thumbnailUrl, "thumbnails");
+      patch.thumbnailUrl = uploaded.secure_url;
+      replacedThumbnail = true;
+    } catch (error) {
+      console.error(`[update] thumbnail upload failed for ${id}:`, error);
+      return res
+        .status(502)
+        .json({ message: "Could not store that thumbnail. Please try again." });
+    }
+  } else if (thumbnailUrl === null) {
+    patch.thumbnailUrl = null;
+    replacedThumbnail = true;
+  }
 
   if (typeof isPublished === "boolean") {
     // Publishing a half-transcoded video would put a dead player on the feed.
@@ -644,6 +672,17 @@ const updateVideo = async (req: Request, res: Response) => {
     .set(patch)
     .where(eq(video.id, id))
     .returning();
+
+  // Only once the row is safely updated: losing the old image after a failed
+  // write would leave the video pointing at nothing.
+  if (replacedThumbnail && existing.thumbnailUrl) {
+    const publicId = publicIdFromUrl(existing.thumbnailUrl);
+    if (publicId) {
+      await deleteFromCloudinary(publicId).catch((error) => {
+        console.error(`[update] old thumbnail cleanup failed for ${id}:`, error);
+      });
+    }
+  }
 
   return res.json({ video: updated });
 };
