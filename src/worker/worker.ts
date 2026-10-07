@@ -1,17 +1,22 @@
 import "dotenv/config";
 import path from "node:path";
 import os from "node:os";
-import { rm, mkdir, stat } from "node:fs/promises";
+import { rm, mkdir, stat, readFile } from "node:fs/promises";
 import { Worker, type Job } from "bullmq";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { redisConnection } from "../lib/redis.js";
 import { db } from "../db/db.js";
-import { video, videoRendition } from "../db/Schema.js";
-import { deleteRawFolderFromCloudinary } from "../utils/cloudinary.js";
-import { transcodeToHls } from "./ffmpeg.js";
+import { video, videoRendition, videoThumbnail, videoCaption } from "../db/Schema.js";
+import {
+  deleteRawFolderFromCloudinary,
+  deleteImageFolderFromCloudinary,
+  uploadImageToCloudinary,
+} from "../utils/cloudinary.js";
+import { transcodeToHls, extractThumbnails, extractCaptions } from "./ffmpeg.js";
 import { uploadHlsDirectory } from "./hls.upload.js";
 import { VIDEO_QUEUE_NAME, type ProcessVideoJob } from "../queue/video.queue.js";
 import { notifyTranscodeFinished } from "../lib/notify.js";
+import { startLiveMonitor } from "./live.monitor.js";
 
 
 const CONCURRENCY = Number(process.env.VIDEO_WORKER_CONCURRENCY ?? 1);
@@ -31,6 +36,7 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
 
   const outputDir = path.join(WORK_ROOT, videoId);
   const cloudinaryPrefix = `videos/${videoId}/hls`;
+  const thumbnailPrefix = `videos/${videoId}/thumbs`;
 
   try {
     await rm(outputDir, { recursive: true, force: true });
@@ -65,6 +71,24 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
     );
 
 
+    // Poster frames, before the transaction so a Cloudinary hiccup here cannot
+    // roll back a transcode that actually succeeded.
+    const posters = await collectPosters(
+      job,
+      sourcePath,
+      outputDir,
+      result.metadata.durationSeconds,
+      thumbnailPrefix,
+    );
+
+    // Subtitle tracks already inside the upload, converted to WebVTT.
+    const captions = await collectCaptions(
+      job,
+      sourcePath,
+      outputDir,
+      result.metadata.subtitles,
+    );
+
     await db.transaction(async (tx) => {
       await tx.delete(videoRendition).where(eq(videoRendition.videoId, videoId));
       await tx.insert(videoRendition).values(
@@ -77,6 +101,47 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
           segmentCount: variant.segmentCount,
         })),
       );
+      await tx.delete(videoThumbnail).where(eq(videoThumbnail.videoId, videoId));
+      if (posters.length > 0) {
+        await tx.insert(videoThumbnail).values(
+          posters.map((poster) => ({
+            videoId,
+            url: poster.url,
+            position: poster.position,
+          })),
+        );
+      }
+
+      // Only embedded ones are replaced; a track the creator uploaded by hand
+      // survives a re-transcode.
+      await tx
+        .delete(videoCaption)
+        .where(
+          and(eq(videoCaption.videoId, videoId), eq(videoCaption.source, "embedded")),
+        );
+
+      if (captions.length > 0) {
+        await tx
+          .insert(videoCaption)
+          .values(
+            captions.map((caption, index) => ({
+              videoId,
+              language: caption.language,
+              label: caption.label,
+              content: caption.content,
+              isDefault: index === 0,
+              source: "embedded" as const,
+            })),
+          )
+          .onConflictDoNothing();
+      }
+
+      const [current] = await tx
+        .select({ thumbnailUrl: video.thumbnailUrl })
+        .from(video)
+        .where(eq(video.id, videoId))
+        .limit(1);
+
       await tx
         .update(video)
         .set({
@@ -84,6 +149,11 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
           duration: result.metadata.durationSeconds,
           status: "ready",
           processingError: null,
+          // Only fills a gap. A thumbnail the creator chose at upload is never
+          // overwritten by a generated one.
+          ...(current?.thumbnailUrl || posters.length === 0
+            ? {}
+            : { thumbnailUrl: posters[0]!.url }),
         })
         .where(eq(video.id, videoId));
     });
@@ -117,6 +187,9 @@ const processVideo = async (job: Job<ProcessVideoJob>) => {
     await deleteRawFolderFromCloudinary(cloudinaryPrefix).catch((cleanupError) => {
       log(job, `cloudinary cleanup failed: ${message(cleanupError)}`);
     });
+    await deleteImageFolderFromCloudinary(thumbnailPrefix).catch((cleanupError) => {
+      log(job, `poster cleanup failed: ${message(cleanupError)}`);
+    });
     throw error;
   } finally {
     await rm(outputDir, { recursive: true, force: true }).catch(() => {});
@@ -131,6 +204,94 @@ const discardSource = async (job: Job<ProcessVideoJob>) => {
   await rm(sourcePath, { force: true }).catch((error) => {
     log(job, `could not remove source "${sourcePath}": ${message(error)}`);
   });
+};
+
+/**
+ * Grabs poster frames and uploads them.
+ *
+ * Never throws: a video with no poster is worth shipping, and failing a
+ * finished transcode over a missing thumbnail would be a poor trade.
+ */
+const collectPosters = async (
+  job: Job<ProcessVideoJob>,
+  sourcePath: string,
+  outputDir: string,
+  durationSeconds: number,
+  prefix: string,
+): Promise<Array<{ url: string; position: number }>> => {
+  try {
+    const frames = await extractThumbnails(
+      sourcePath,
+      path.join(outputDir, "thumbs"),
+      durationSeconds,
+    );
+
+    const uploaded: Array<{ url: string; position: number }> = [];
+
+    for (const frame of frames) {
+      try {
+        const result = await uploadImageToCloudinary(
+          frame.path,
+          `${prefix}/${frame.position}`,
+        );
+        uploaded.push({ url: result.secure_url, position: frame.position });
+      } catch (error) {
+        log(job, `poster ${frame.position} upload failed: ${message(error)}`);
+      }
+    }
+
+    if (uploaded.length > 0) log(job, `captured ${uploaded.length} poster frames`);
+
+    return uploaded;
+  } catch (error) {
+    log(job, `poster capture failed: ${message(error)}`);
+    return [];
+  }
+};
+
+/**
+ * Reads any embedded subtitle tracks off disk as WebVTT text.
+ *
+ * Never throws: a video without captions is still a video, and losing a
+ * finished transcode over a subtitle stream would be a poor trade.
+ */
+const collectCaptions = async (
+  job: Job<ProcessVideoJob>,
+  sourcePath: string,
+  outputDir: string,
+  subtitles: Awaited<ReturnType<typeof transcodeToHls>>["metadata"]["subtitles"],
+): Promise<Array<{ language: string; label: string; content: string }>> => {
+  if (subtitles.length === 0) return [];
+
+  try {
+    const tracks = await extractCaptions(
+      sourcePath,
+      path.join(outputDir, "captions"),
+      subtitles,
+    );
+
+    const collected: Array<{ language: string; label: string; content: string }> = [];
+
+    for (const track of tracks) {
+      try {
+        const content = await readFile(track.path, "utf8");
+        if (content.trim().startsWith("WEBVTT")) {
+          collected.push({ language: track.language, label: track.label, content });
+        }
+      } catch (error) {
+        log(job, `caption ${track.language} unreadable: ${message(error)}`);
+      }
+    }
+
+    if (collected.length > 0) {
+      log(job, `captured ${collected.length} caption track(s)`);
+    }
+
+    return collected;
+  } catch (error) {
+    log(job, `caption extraction failed: ${message(error)}`);
+    return [];
+  }
 };
 
 const worker = new Worker<ProcessVideoJob>(VIDEO_QUEUE_NAME, processVideo, {
@@ -214,11 +375,16 @@ const message = (error: unknown) =>
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {
     console.log(`[worker] ${signal} received, draining...`);
+    stopLiveMonitor();
     await worker.close();
     process.exit(0);
   });
 }
 
 await mkdir(WORK_ROOT, { recursive: true });
+
+// The long-running process is the natural home for this: it watches the media
+// server and keeps stream status honest without the API holding a timer.
+const stopLiveMonitor = startLiveMonitor();
 
 export { worker };

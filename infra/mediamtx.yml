@@ -1,0 +1,38 @@
+# Media server for live ingest.
+#
+# Express cannot accept RTMP, so OBS publishes here and this republishes the
+# stream as HLS, which the existing Vidstack player already knows how to play.
+
+logLevel: info
+
+# Publishers connect here. The path they publish to is the stream key.
+rtmp: yes
+rtmpAddress: :1935
+
+# Viewers read here.
+hls: yes
+hlsAddress: :8888
+# Keep remuxing even with nobody watching, so the first viewer does not wait
+# for a segment to be produced.
+hlsAlwaysRemux: yes
+hlsVariant: mpegts
+hlsSegmentCount: 7
+hlsSegmentDuration: 2s
+# The player runs on another origin in development.
+hlsAllowOrigin: '*'
+
+# Read by the worker to tell which streams are actually publishing.
+api: yes
+apiAddress: :9997
+
+# Every publish is checked against the database before it is accepted, so a
+# stranger cannot broadcast on someone else's channel.
+authMethod: http
+authHTTPAddress: http://host.docker.internal:3000/api/live/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+paths:
+  all_others:

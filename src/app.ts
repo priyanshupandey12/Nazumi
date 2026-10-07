@@ -10,6 +10,9 @@ import notificationRoutes from './routes/notification.routes.js';
 import profileRoutes from './routes/profile.routes.js';
 import reportRoutes from './routes/report.routes.js';
 import adminRoutes from './routes/admin.routes.js';
+import captionRoutes from './routes/caption.routes.js';
+import livestreamRoutes from './routes/livestream.routes.js';
+import liveRoutes from './routes/live.routes.js';
 import { uploadErrorHandler } from './middlware/errors.js';
 
 /**
@@ -46,6 +49,9 @@ export const createApp = (): Express => {
   app.use("/api/me", profileRoutes);
   app.use("/api/reports", reportRoutes);
   app.use("/api/admin", adminRoutes);
+  app.use("/api/captions", captionRoutes);
+  app.use("/api/livestreams", livestreamRoutes);
+  app.use("/api/live", liveRoutes);
 
   app.get("/api/health", (req: express.Request, res: express.Response) => {
     res.json({ status: "healthy", timestamp: new Date() });

@@ -3,6 +3,7 @@ import upload from "../middlware/multer.js";
 import { limits } from "../middlware/rateLimit.js";
 import { likeVideo, unlikeVideo } from "../controller/like.controller.js";
 import { listComments, createComment } from "../controller/comment.controller.js";
+import { listCaptions, createCaption } from "../controller/caption.controller.js";
 import {
   uploadVideo,
   getVideoStatus,
@@ -15,6 +16,7 @@ import {
   deleteVideo,
   getCategories,
   getRelatedVideos,
+  getVideoThumbnails,
 } from "../controller/video.controller.js";
 
 const router: IRouter = Router();
@@ -27,6 +29,10 @@ router.get("/mine", getAllUploadedVideo);
 router.get("/mine/:id", getUploadedVideoById);
 router.get("/:id/status", getVideoStatus);
 router.get("/:id/related", getRelatedVideos);
+router.get("/:id/thumbnails", getVideoThumbnails);
+
+router.get("/:id/captions", listCaptions);
+router.post("/:id/captions", createCaption);
 router.post("/:id/view", limits.view, recordVideoView);
 
 router.post("/:id/like", limits.like, likeVideo);

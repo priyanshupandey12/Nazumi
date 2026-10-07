@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, afterAll, vi } from "vitest";
+import { rm } from "node:fs/promises";
 import { sql } from "drizzle-orm";
 import { db } from "../src/db/db.js";
 import { videoQueue } from "../src/queue/video.queue.js";
@@ -16,8 +17,12 @@ vi.mock("../src/utils/cloudinary.js", () => ({
   uploadRawToCloudinary: vi.fn(async (_path: string, publicId: string) => ({
     secure_url: `https://res.cloudinary.test/raw/upload/${publicId}`,
   })),
+  uploadImageToCloudinary: vi.fn(async (_path: string, publicId: string) => ({
+    secure_url: `https://res.cloudinary.test/image/upload/${publicId}.jpg`,
+  })),
   deleteFromCloudinary: vi.fn(async () => ({ result: "ok" })),
   deleteRawFolderFromCloudinary: vi.fn(async () => ({ deleted: {} })),
+  deleteImageFolderFromCloudinary: vi.fn(async () => ({ deleted: {} })),
   publicIdFromUrl: (url: string) => {
     const match = /\/upload\/(?:v\d+\/)?(.+)$/.exec(url);
     return match?.[1]?.replace(/\.[^./]+$/, "") ?? null;
@@ -81,4 +86,11 @@ afterAll(async () => {
   await videoQueue.obliterate({ force: true }).catch(() => {});
   await videoQueue.close().catch(() => {});
   await redis.quit().catch(() => {});
+
+  // Upload tests write real multipart bodies to disk; nothing else removes
+  // them, because the worker that normally would never runs here.
+  await rm(process.env.VIDEO_UPLOAD_DIR ?? "./tmp/test-uploads", {
+    recursive: true,
+    force: true,
+  }).catch(() => {});
 });

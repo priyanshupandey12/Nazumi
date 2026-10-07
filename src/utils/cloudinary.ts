@@ -45,6 +45,44 @@ const uploadRawToCloudinary = async (filePath: string, publicId: string) => {
 }
 
 
+/** An image at a known public ID, so it can be found again to delete. */
+const uploadImageToCloudinary = async (filePath: string, publicId: string) => {
+    try {
+        if (!filePath || !publicId) {
+            throw new Error("Invalid file path or public ID");
+        }
+        return await cloudinary.v2.uploader.upload(filePath, {
+            resource_type: "image",
+            public_id: publicId,
+            use_filename: false,
+            unique_filename: false,
+            overwrite: true,
+        });
+    } catch (error) {
+        throw new Error(
+            `Error uploading image "${publicId}" to Cloudinary: ${describe(error)}`,
+            { cause: error },
+        );
+    }
+}
+
+const deleteImageFolderFromCloudinary = async (prefix: string) => {
+    try {
+        if (!prefix) {
+            throw new Error("Invalid prefix");
+        }
+        return await cloudinary.v2.api.delete_resources_by_prefix(prefix, {
+            resource_type: "image",
+            invalidate: true,
+        });
+    } catch (error) {
+        throw new Error(
+            `Error deleting image folder "${prefix}" from Cloudinary: ${describe(error)}`,
+            { cause: error },
+        );
+    }
+}
+
 const deleteRawFolderFromCloudinary = async (prefix: string) => {
     try {
         if (!prefix) {
@@ -108,5 +146,7 @@ export {
     uploadRawToCloudinary,
     deleteFromCloudinary,
     deleteRawFolderFromCloudinary,
+    uploadImageToCloudinary,
+    deleteImageFolderFromCloudinary,
     publicIdFromUrl,
 };

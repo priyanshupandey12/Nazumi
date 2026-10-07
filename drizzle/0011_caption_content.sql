@@ -1,0 +1,1 @@
+ALTER TABLE "video_caption" ADD COLUMN "content" text NOT NULL;

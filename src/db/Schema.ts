@@ -150,6 +150,58 @@ export const videoRendition = pgTable("video_rendition",{
 (table) => [index("video_rendition_videoId_idx").on(table.videoId)],
 )
 
+export const captionSourceEnum = pgEnum("caption_source", ["uploaded", "embedded"])
+
+export const videoCaption = pgTable("video_caption", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  videoId: uuid("video_id").notNull().references(() => video.id, { onDelete: "cascade" }),
+  // BCP-47, as the player's `srclang` expects it: "en", "pt-BR".
+  language: text("language").notNull(),
+  // What the track is called in the player menu.
+  label: text("label").notNull(),
+  // The WebVTT itself, not a link to it. A `<track>` is only honoured when it
+  // is served as text/vtt, which object storage guesses at; serving it from
+  // our own origin also sidesteps the cross-origin fetch the player makes.
+  // Even a feature-length transcript is well under a megabyte of text.
+  content: text("content").notNull(),
+  // The track shown unless the viewer picks another.
+  isDefault: boolean("is_default").default(false).notNull(),
+  source: captionSourceEnum("source").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [
+  index("video_caption_videoId_idx").on(table.videoId),
+  // One track per language per video; re-uploading replaces rather than
+  // stacking two "English" entries in the menu.
+  uniqueIndex("video_caption_video_language_idx").on(table.videoId, table.language),
+],
+)
+
+export const videoCaptionRelations = relations(videoCaption, ({ one }) => ({
+  video: one(video, {
+    fields: [videoCaption.videoId],
+    references: [video.id],
+  }),
+}))
+
+export const videoThumbnail = pgTable("video_thumbnail", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  videoId: uuid("video_id").notNull().references(() => video.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  // 0, 1, 2 — the order they were pulled from the timeline.
+  position: integer("position").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+},
+(table) => [index("video_thumbnail_videoId_idx").on(table.videoId)],
+)
+
+export const videoThumbnailRelations = relations(videoThumbnail, ({ one }) => ({
+  video: one(video, {
+    fields: [videoThumbnail.videoId],
+    references: [video.id],
+  }),
+}))
+
 export const livestreaming= pgTable("livestreaming",{
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     creatorId:text("creator_id").notNull().references(()=>user.id,{onDelete:"cascade"}),

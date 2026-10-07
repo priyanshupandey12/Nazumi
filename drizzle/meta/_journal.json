@@ -64,6 +64,34 @@
       "when": 1791017901061,
       "tag": "0008_transcode_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791020020207,
+      "tag": "0009_auto_thumbnails",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791020982161,
+      "tag": "0010_captions",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791021092159,
+      "tag": "0011_caption_content",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791021095217,
+      "tag": "0012_caption_drop_url",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,9 @@ import path from "node:path";
 import multer from "multer";
 
 
-const UPLOAD_DIR = path.resolve("./tmp/uploads");
+// Configurable so tests can write somewhere disposable instead of leaving
+// fixtures among real uploads.
+const UPLOAD_DIR = path.resolve(process.env.VIDEO_UPLOAD_DIR ?? "./tmp/uploads");
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
 /** A file the upload endpoint will not accept, answered as 400 rather than 500. */

@@ -34,12 +34,21 @@ const LADDER: Rung[] = [
   { name: "1080p", height: 1080, videoBitrate: 5000, maxrate: 5350, bufsize: 7500, audioBitrate: 192 },
 ];
 
+export type SubtitleStream = {
+  /** Index among subtitle streams, which is what `-map 0:s:N` takes. */
+  index: number;
+  codec: string;
+  language: string | null;
+  title: string | null;
+};
+
 export type VideoMetadata = {
   durationSeconds: number;
   width: number;
   height: number;
   fps: number;
   hasAudio: boolean;
+  subtitles: SubtitleStream[];
 };
 
 
@@ -56,10 +65,12 @@ export const probeVideo = async (inputPath: string): Promise<VideoMetadata> => {
     format?: { duration?: string };
     streams?: Array<{
       codec_type?: string;
+      codec_name?: string;
       width?: number;
       height?: number;
       avg_frame_rate?: string;
       r_frame_rate?: string;
+      tags?: { language?: string; title?: string };
     }>;
   };
 
@@ -76,7 +87,111 @@ export const probeVideo = async (inputPath: string): Promise<VideoMetadata> => {
     height: videoStream.height,
     fps: parseFrameRate(videoStream.avg_frame_rate ?? videoStream.r_frame_rate),
     hasAudio: streams.some((s) => s.codec_type === "audio"),
+    subtitles: streams
+      .filter((s) => s.codec_type === "subtitle")
+      .map((s, index) => ({
+        index,
+        codec: s.codec_name ?? "unknown",
+        language: s.tags?.language?.trim() || null,
+        title: s.tags?.title?.trim() || null,
+      })),
   };
+};
+
+/**
+ * Bitmap subtitle formats are pictures of text, not text, so there is nothing
+ * to turn into WebVTT without running OCR over them.
+ */
+const TEXT_SUBTITLE_CODECS = new Set([
+  "subrip",
+  "srt",
+  "ass",
+  "ssa",
+  "webvtt",
+  "mov_text",
+  "text",
+]);
+
+export type ExtractedCaption = {
+  path: string;
+  language: string;
+  label: string;
+};
+
+/** A readable name for a track whose metadata says little. */
+const labelFor = (stream: SubtitleStream, fallbackIndex: number): string => {
+  if (stream.title) return stream.title;
+
+  if (stream.language) {
+    try {
+      const name = new Intl.DisplayNames(["en"], { type: "language" }).of(
+        stream.language,
+      );
+      if (name && name !== stream.language) return name;
+    } catch {
+      // An unrecognised tag just falls through to the raw code.
+    }
+    return stream.language;
+  }
+
+  return `Track ${fallbackIndex + 1}`;
+};
+
+/**
+ * Pulls text subtitle tracks out of the source and converts them to WebVTT,
+ * which is the only format a browser `<track>` reads.
+ *
+ * A track that will not convert is skipped rather than failing the job — the
+ * video is still worth publishing without its captions.
+ */
+export const extractCaptions = async (
+  inputPath: string,
+  outputDir: string,
+  subtitles: SubtitleStream[],
+): Promise<ExtractedCaption[]> => {
+  const usable = subtitles.filter((stream) =>
+    TEXT_SUBTITLE_CODECS.has(stream.codec),
+  );
+
+  if (usable.length === 0) return [];
+
+  await mkdir(outputDir, { recursive: true });
+
+  const extracted: ExtractedCaption[] = [];
+  const seen = new Set<string>();
+
+  for (const [position, stream] of usable.entries()) {
+    // The language is the unique key per video, so a file with two unlabelled
+    // tracks cannot write both to the same row.
+    let language = stream.language ?? `und-${position}`;
+    if (seen.has(language)) language = `${language}-${position}`;
+    seen.add(language);
+
+    const target = path.join(outputDir, `${language}.vtt`);
+
+    try {
+      await run(FFMPEG, [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", inputPath,
+        "-map", `0:s:${stream.index}`,
+        "-c:s", "webvtt",
+        "-y",
+        target,
+      ]);
+
+      extracted.push({
+        path: target,
+        language,
+        label: labelFor(stream, position),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[ffmpeg] could not extract subtitle ${stream.index}: ${reason}`);
+    }
+  }
+
+  return extracted;
 };
 
 
@@ -261,4 +376,61 @@ const reportProgress = (text: string, onProgress: (seconds: number) => void) => 
       if (Number.isFinite(micros) && micros >= 0) onProgress(micros / 1_000_000);
     }
   }
+};
+
+/** Where in the video to grab poster frames from. */
+const THUMBNAIL_POINTS = [0.1, 0.5, 0.9] as const;
+
+export type ThumbnailFrame = {
+  path: string;
+  position: number;
+  atSeconds: number;
+};
+
+/**
+ * Pulls a few candidate poster frames out of the source.
+ *
+ * Seeking before `-i` rather than after means ffmpeg jumps straight to the
+ * keyframe instead of decoding from the start, so three frames out of a long
+ * video cost about as much as one.
+ *
+ * A frame that cannot be read is skipped rather than failing the job: a
+ * missing poster is a cosmetic problem, a failed transcode is not.
+ */
+export const extractThumbnails = async (
+  inputPath: string,
+  outputDir: string,
+  durationSeconds: number,
+): Promise<ThumbnailFrame[]> => {
+  await mkdir(outputDir, { recursive: true });
+
+  const frames: ThumbnailFrame[] = [];
+
+  for (const [index, fraction] of THUMBNAIL_POINTS.entries()) {
+    // A very short clip would otherwise seek past its own end.
+    const at = Math.max(0, Math.min(durationSeconds * fraction, durationSeconds - 0.1));
+    const target = path.join(outputDir, `thumb_${index}.jpg`);
+
+    try {
+      await run(FFMPEG, [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-ss", at.toFixed(2),
+        "-i", inputPath,
+        "-frames:v", "1",
+        // Width capped, height kept even for any later encode.
+        "-vf", "scale=1280:-2",
+        "-q:v", "3",
+        "-y",
+        target,
+      ]);
+
+      frames.push({ path: target, position: index, atSeconds: at });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[ffmpeg] could not grab frame at ${at}s: ${reason}`);
+    }
+  }
+
+  return frames;
 };

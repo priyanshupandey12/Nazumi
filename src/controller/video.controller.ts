@@ -5,7 +5,7 @@ import { fromNodeHeaders } from "better-auth/node";
 import { and, eq ,lt , desc, sql, inArray, ne, or, count, isNotNull, getTableColumns} from "drizzle-orm";
 import { auth } from "../lib/auth.js";
 import { db } from "../db/db.js";
-import { comment, like, subscriber, user, video, videoRendition } from "../db/Schema.js";
+import { comment, like, subscriber, user, video, videoRendition, videoThumbnail } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
 import { listingColumns, likeCounts, commentCounts } from "../lib/listing.js";
 import { notifyNewVideo } from "../lib/notify.js";
@@ -17,6 +17,7 @@ import {
   uploadToCloudinary,
   deleteFromCloudinary,
   deleteRawFolderFromCloudinary,
+  deleteImageFolderFromCloudinary,
   publicIdFromUrl,
 } from "../utils/cloudinary.js";
 import {
@@ -471,6 +472,52 @@ const getRelatedVideos = async (req: Request, res: Response) => {
 };
 
 
+/*
+
+  Client
+  |
+  | GET /videos/:id/thumbnails
+  v
+Owner only — these are frames from an unpublished cut as often as not
+  |
+  v
+{ thumbnails: [{ url, position }], selected }
+
+*/
+
+const getVideoThumbnails = async (req: Request, res: Response) => {
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const viewer = await currentUser(req);
+
+  if (!viewer) {
+    return res.status(401).json({ message: "Unauthorized - Please sign in first" });
+  }
+
+  const [row] = await db
+    .select({ id: video.id, creatorId: video.creatorId, thumbnailUrl: video.thumbnailUrl })
+    .from(video)
+    .where(eq(video.id, id))
+    .limit(1);
+
+  if (!row || row.creatorId !== viewer.id) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  const thumbnails = await db
+    .select({ url: videoThumbnail.url, position: videoThumbnail.position })
+    .from(videoThumbnail)
+    .where(eq(videoThumbnail.videoId, id))
+    .orderBy(videoThumbnail.position);
+
+  return res.json({ thumbnails, selected: row.thumbnailUrl });
+};
+
+
 const getVideoById = async (req: Request, res: Response) => {
   const id = typeof req.params.id === "string" ? req.params.id : undefined;
 
@@ -653,6 +700,27 @@ const updateVideo = async (req: Request, res: Response) => {
         .status(502)
         .json({ message: "Could not store that thumbnail. Please try again." });
     }
+  } else if (typeof thumbnailUrl === "string" && thumbnailUrl.startsWith("http")) {
+    // Choosing one of this video's own generated frames. Checked against the
+    // candidates so an arbitrary URL cannot be planted as a thumbnail.
+    const [candidate] = await db
+      .select({ url: videoThumbnail.url })
+      .from(videoThumbnail)
+      .where(
+        and(eq(videoThumbnail.videoId, id), eq(videoThumbnail.url, thumbnailUrl)),
+      )
+      .limit(1);
+
+    if (candidate) {
+      patch.thumbnailUrl = candidate.url;
+      replacedThumbnail = true;
+    } else if (thumbnailUrl !== existing.thumbnailUrl) {
+      // Not a candidate and not the current value echoed back. Saying so beats
+      // ignoring it and leaving the client wondering why the pick did not take.
+      return res.status(400).json({
+        message: "That image is not one of this video's thumbnails",
+      });
+    }
   } else if (thumbnailUrl === null) {
     patch.thumbnailUrl = null;
     replacedThumbnail = true;
@@ -695,7 +763,9 @@ const updateVideo = async (req: Request, res: Response) => {
   // write would leave the video pointing at nothing.
   if (replacedThumbnail && existing.thumbnailUrl) {
     const publicId = publicIdFromUrl(existing.thumbnailUrl);
-    if (publicId) {
+    // Only a creator's own upload is destroyed. A generated frame is still one
+    // of this video's candidates and has to survive being deselected.
+    if (publicId?.startsWith("thumbnails/")) {
       await deleteFromCloudinary(publicId).catch((error) => {
         console.error(`[update] old thumbnail cleanup failed for ${id}:`, error);
       });
@@ -770,6 +840,10 @@ const deleteVideo = async (req: Request, res: Response) => {
     console.error(`[delete] cloudinary hls cleanup failed for ${id}:`, error);
   });
 
+  await deleteImageFolderFromCloudinary(`videos/${id}/thumbs`).catch((error) => {
+    console.error(`[delete] cloudinary poster cleanup failed for ${id}:`, error);
+  });
+
   if (existing.thumbnailUrl) {
     const publicId = publicIdFromUrl(existing.thumbnailUrl);
     if (publicId) {
@@ -793,4 +867,4 @@ const deleteVideo = async (req: Request, res: Response) => {
 };
 
 
-export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView, deleteVideo, getCategories, getRelatedVideos };
+export { uploadVideo, getVideoStatus, getAllUploadedVideo, getUploadedVideoById, getAllVideo, getVideoById, updateVideo, recordVideoView, deleteVideo, getCategories, getRelatedVideos, getVideoThumbnails };

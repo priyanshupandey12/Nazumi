@@ -1,0 +1,1 @@
+ALTER TABLE "video_caption" DROP COLUMN "url";
