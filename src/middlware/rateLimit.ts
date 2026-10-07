@@ -43,6 +43,36 @@ const identify = async (req: Request): Promise<string> => {
   return `ip:${ip}`;
 };
 
+/**
+ * Counts one use against a bucket and says whether it is still allowed.
+ *
+ * Split out of the middleware so the WebSocket chat layer, which never sees an
+ * Express request, shares the same counting and the same fail-open behaviour.
+ */
+export const consume = async (
+  name: string,
+  identity: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<{ allowed: boolean; remaining: number }> => {
+  try {
+    const window = Math.floor(Date.now() / 1000 / windowSeconds);
+    const key = `rl:${name}:${identity}:${window}`;
+
+    const [[, count]] = (await redis
+      .multi()
+      .incr(key)
+      .expire(key, windowSeconds, "NX")
+      .exec()) as [[Error | null, number], [Error | null, number]];
+
+    return { allowed: count <= limit, remaining: Math.max(0, limit - count) };
+  } catch (error) {
+    // Fail open, for the same reason the middleware does.
+    console.error(`[rateLimit] ${name} unavailable, allowing:`, error);
+    return { allowed: true, remaining: limit };
+  }
+};
+
 export const rateLimit = (options: RateLimitOptions) => {
   const { name, limit, windowSeconds } = options;
   const message =

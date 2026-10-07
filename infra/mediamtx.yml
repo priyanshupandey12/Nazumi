@@ -15,11 +15,21 @@ hlsAddress: :8888
 # Keep remuxing even with nobody watching, so the first viewer does not wait
 # for a segment to be produced.
 hlsAlwaysRemux: yes
-hlsVariant: mpegts
-hlsSegmentCount: 7
-hlsSegmentDuration: 2s
+
+# Low-latency HLS. The ordinary variant only publishes a segment once it is
+# complete, so a viewer is always at least a segment or two behind — 10 to 30
+# seconds in practice, which puts chat ahead of the video people are watching.
+# LL-HLS publishes partial segments as they are produced, bringing that down to
+# roughly three part-durations.
+hlsVariant: lowLatency
+hlsPartDuration: 500ms
+
+# Shorter segments than the mpegts variant used, since latency is bounded by
+# part duration here rather than segment duration.
+hlsSegmentCount: 30
+hlsSegmentDuration: 1s
 # The player runs on another origin in development.
-hlsAllowOrigin: '*'
+hlsAllowOrigins: ['*']
 
 # Read by the worker to tell which streams are actually publishing.
 api: yes

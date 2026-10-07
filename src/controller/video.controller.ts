@@ -655,6 +655,7 @@ const updateVideo = async (req: Request, res: Response) => {
       status: video.status,
       thumbnailUrl: video.thumbnailUrl,
       publishedAt: video.publishedAt,
+      takedownReason: video.takedownReason,
     })
     .from(video)
     .where(eq(video.id, id))
@@ -731,6 +732,15 @@ const updateVideo = async (req: Request, res: Response) => {
   let announceTo: string | null = null;
 
   if (typeof isPublished === "boolean") {
+    // Otherwise a takedown is a one-click inconvenience: the creator just
+    // publishes it again.
+    if (isPublished && existing.takedownReason) {
+      return res.status(409).json({
+        message:
+          "This video was removed by a moderator and cannot be published again.",
+      });
+    }
+
     // Publishing a half-transcoded video would put a dead player on the feed.
     if (isPublished && existing.status !== "ready") {
       return res.status(409).json({
@@ -825,7 +835,21 @@ const deleteVideo = async (req: Request, res: Response) => {
   }
 
   if (existing.creatorId !== session.user.id) {
-    return res.status(403).json({ message: "You can only delete your own videos" });
+    // An admin can remove anything, which is the only way illegal content ever
+    // leaves the platform — the creator is hardly going to delete it.
+    const [account] = await db
+      .select({ role: user.role })
+      .from(user)
+      .where(eq(user.id, session.user.id))
+      .limit(1);
+
+    if (account?.role !== "admin") {
+      return res.status(403).json({ message: "You can only delete your own videos" });
+    }
+
+    console.warn(
+      `[moderation] admin ${session.user.id} deleted video ${id} owned by ${existing.creatorId}`,
+    );
   }
 
 

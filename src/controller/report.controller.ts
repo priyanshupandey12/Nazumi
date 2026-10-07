@@ -3,6 +3,7 @@ import { and, desc, eq, isNotNull, lt, or, sql } from "drizzle-orm";
 import { db } from "../db/db.js";
 import { comment, report, user, video } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
+import { notifyTakedown } from "../lib/notify.js";
 import { resolveIdentity } from "../lib/identity.js";
 
 /*
@@ -262,8 +263,10 @@ const resolveReport = async (req: Request, res: Response) => {
 
   const { action } = req.body ?? {};
 
-  if (action !== "dismiss" && action !== "delete") {
-    return res.status(400).json({ message: "Action must be dismiss or delete" });
+  if (action !== "dismiss" && action !== "delete" && action !== "takedown") {
+    return res
+      .status(400)
+      .json({ message: "Action must be dismiss, delete or takedown" });
   }
 
   const [existing] = await db
@@ -296,13 +299,66 @@ const resolveReport = async (req: Request, res: Response) => {
     return res.status(403).json({ message: "That is not yours to moderate" });
   }
 
-  if (action === "delete") {
-    if (!existing.commentId) {
-      // Taking a video down is an admin decision made elsewhere; a creator
-      // already controls their own videos from the dashboard.
+  // Taking a video down is an admin decision: judging a complaint about your
+  // own video was never the creator's call.
+  if (existing.videoId && !isAdmin) {
+    return res
+      .status(403)
+      .json({ message: "Only an admin can act on a report about a video" });
+  }
+
+  if (action === "takedown") {
+    if (!existing.videoId) {
       return res
         .status(400)
-        .json({ message: "Only a reported comment can be removed from here" });
+        .json({ message: "Only a reported video can be taken down" });
+    }
+
+    const { reason } = req.body ?? {};
+    const text =
+      typeof reason === "string" && reason.trim()
+        ? reason.trim()
+        : "Removed after a report";
+
+    const [taken] = await db
+      .update(video)
+      .set({ isPublished: false, takedownReason: text, takedownAt: new Date() })
+      .where(eq(video.id, existing.videoId))
+      .returning({ creatorId: video.creatorId });
+
+    if (!taken) {
+      return res.status(404).json({ message: "Video not found" });
+    }
+
+    console.warn(
+      `[moderation] admin ${viewer.id} took down video ${existing.videoId} from report ${id}: ${text}`,
+    );
+
+    await notifyTakedown({
+      creatorId: taken.creatorId,
+      videoId: existing.videoId,
+    });
+
+    await db
+      .update(report)
+      .set({ status: "actioned", reviewedAt: new Date() })
+      .where(eq(report.id, id));
+
+    return res.json({ status: "actioned" });
+  }
+
+  if (action === "delete") {
+    if (existing.videoId) {
+      // Permanent removal, for content that must not simply be hidden.
+      console.warn(
+        `[moderation] admin ${viewer.id} deleted video ${existing.videoId} from report ${id}`,
+      );
+      await db.delete(video).where(eq(video.id, existing.videoId));
+      return res.json({ status: "actioned" });
+    }
+
+    if (!existing.commentId) {
+      return res.status(400).json({ message: "That report has no target" });
     }
 
     // Reports on this comment cascade away with it, this one included.

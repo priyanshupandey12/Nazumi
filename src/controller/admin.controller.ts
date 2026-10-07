@@ -1,9 +1,10 @@
 import type { Request, Response } from "express";
-import { count, desc, eq, ilike, or } from "drizzle-orm";
+import { and, count, desc, eq, ilike, isNotNull, or, sql } from "drizzle-orm";
 import { db } from "../db/db.js";
-import { subscriber, user, video } from "../db/Schema.js";
+import { report, subscriber, user, video } from "../db/Schema.js";
 import { currentUser } from "../lib/access.js";
-import { toPublicIdentity } from "../lib/identity.js";
+import { identityColumns, toPublicIdentity } from "../lib/identity.js";
+import { notifyTakedown } from "../lib/notify.js";
 
 /*
 
@@ -186,4 +187,170 @@ const setUserRole = async (req: Request, res: Response) => {
   return res.json({ id: updated.id, role: updated.role });
 };
 
-export { listUsers, setUserRole };
+/*
+
+  Admin
+  |
+  | GET /admin/videos?q=&filter=reported|takendown
+  v
+Everything on the platform, not just what has been reported
+  |
+  v
+POST /admin/videos/:id/takedown  { reason }   -> unpublished, creator told
+POST /admin/videos/:id/restore                -> the decision reversed
+
+*/
+
+const reportCounts = db
+  .select({ videoId: report.videoId, reportTotal: count().as("report_total") })
+  .from(report)
+  .where(isNotNull(report.videoId))
+  .groupBy(report.videoId)
+  .as("report_counts");
+
+const MAX_TAKEDOWN_REASON = 300;
+
+const listAllVideos = async (req: Request, res: Response) => {
+  const auth = await requireAdmin(req);
+  if (auth.error) return deny(res, auth.error);
+
+  const limit = Math.min(
+    parseInt(req.query.limit as string) || DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+  );
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const filter = typeof req.query.filter === "string" ? req.query.filter : "";
+
+  const clauses = [];
+
+  if (q) {
+    clauses.push(
+      or(
+        ilike(video.title, `%${q}%`),
+        ilike(video.description, `%${q}%`),
+        ilike(user.name, `%${q}%`),
+        ilike(user.email, `%${q}%`),
+      ),
+    );
+  }
+
+  // Reviewing is usually triggered by something, so the common cases are
+  // reachable without typing a query.
+  if (filter === "takendown") clauses.push(isNotNull(video.takedownReason));
+  if (filter === "reported") clauses.push(isNotNull(reportCounts.videoId));
+
+  const rows = await db
+    .select({
+      id: video.id,
+      title: video.title,
+      description: video.description,
+      thumbnailUrl: video.thumbnailUrl,
+      status: video.status,
+      isPublished: video.isPublished,
+      category: video.category,
+      viewCount: video.viewCount,
+      createdAt: video.createdAt,
+      takedownReason: video.takedownReason,
+      takedownAt: video.takedownAt,
+      creator: identityColumns,
+      reportCount: reportCounts.reportTotal,
+    })
+    .from(video)
+    .innerJoin(user, eq(video.creatorId, user.id))
+    .leftJoin(reportCounts, eq(reportCounts.videoId, video.id))
+    .where(clauses.length > 0 ? and(...clauses) : undefined)
+    .orderBy(desc(video.createdAt))
+    .limit(limit);
+
+  return res.json({
+    videos: rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      thumbnailUrl: row.thumbnailUrl,
+      status: row.status,
+      isPublished: row.isPublished,
+      category: row.category,
+      viewCount: row.viewCount,
+      createdAt: row.createdAt,
+      takedownReason: row.takedownReason,
+      takedownAt: row.takedownAt,
+      reportCount: row.reportCount ?? 0,
+      creator: toPublicIdentity(row.creator),
+    })),
+  });
+};
+
+const takedownVideo = async (req: Request, res: Response) => {
+  const auth = await requireAdmin(req);
+  if (auth.error) return deny(res, auth.error);
+
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  const { reason } = req.body ?? {};
+
+  // A takedown with no stated reason is indistinguishable from a bug, both to
+  // the creator and to whoever reviews the decision later.
+  if (typeof reason !== "string" || !reason.trim()) {
+    return res.status(400).json({ message: "A reason is required" });
+  }
+
+  if (reason.trim().length > MAX_TAKEDOWN_REASON) {
+    return res.status(400).json({ message: "That reason is too long" });
+  }
+
+  const [updated] = await db
+    .update(video)
+    .set({
+      isPublished: false,
+      takedownReason: reason.trim(),
+      takedownAt: new Date(),
+    })
+    .where(eq(video.id, id))
+    .returning({ id: video.id, creatorId: video.creatorId, title: video.title });
+
+  if (!updated) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  console.warn(
+    `[moderation] admin ${auth.viewer.id} took down "${updated.title}" (${id}): ${reason.trim()}`,
+  );
+
+  await notifyTakedown({ creatorId: updated.creatorId, videoId: id });
+
+  return res.json({ id, takedownReason: reason.trim() });
+};
+
+const restoreVideo = async (req: Request, res: Response) => {
+  const auth = await requireAdmin(req);
+  if (auth.error) return deny(res, auth.error);
+
+  const id = typeof req.params.id === "string" ? req.params.id : undefined;
+
+  if (!id) {
+    return res.status(400).json({ message: "Video id is required" });
+  }
+
+  // Clears the block but does not republish: whether it goes back up is the
+  // creator's call, not the moderator's.
+  const [updated] = await db
+    .update(video)
+    .set({ takedownReason: null, takedownAt: null })
+    .where(eq(video.id, id))
+    .returning({ id: video.id });
+
+  if (!updated) {
+    return res.status(404).json({ message: "Video not found" });
+  }
+
+  console.warn(`[moderation] admin ${auth.viewer.id} restored video ${id}`);
+
+  return res.json({ id });
+};
+
+export { listUsers, setUserRole, listAllVideos, takedownVideo, restoreVideo };

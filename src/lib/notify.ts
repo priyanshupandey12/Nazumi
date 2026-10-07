@@ -105,3 +105,27 @@ export const notifyTranscodeFinished = async (params: {
     })
     .catch(swallow(`transcode ${params.outcome} notification`));
 };
+
+/**
+ * An admin removed a video from public view.
+ *
+ * The creator has to be told, with the reason — a video that silently
+ * disappears from their own channel reads as a bug, and they would simply try
+ * to publish it again.
+ */
+export const notifyTakedown = async (params: {
+  creatorId: string;
+  videoId: string;
+}) => {
+  await db
+    .insert(notification)
+    .values({
+      userId: params.creatorId,
+      // A moderation decision speaks for the platform, not for the admin who
+      // made it — naming them invites retaliation.
+      actorId: null,
+      type: "video_takedown",
+      videoId: params.videoId,
+    })
+    .catch(swallow("takedown notification"));
+};

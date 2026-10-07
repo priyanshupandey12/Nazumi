@@ -12,6 +12,7 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   // an upload finishes in silence and nobody knows to publish it.
   "video_ready",
   "video_failed",
+  "video_takedown",
 ])
 export const reportReasonEnum = pgEnum("report_reason", [
   "spam",
@@ -125,6 +126,11 @@ export const video= pgTable("video",{
    // Set once, the first time it goes public. Subscribers are notified only
    // then, so unpublishing and republishing cannot notify them twice.
    publishedAt: timestamp("published_at"),
+   // Set when an admin removes a video from public view. Kept rather than
+   // deleting the row, so the creator learns why and the decision is
+   // reversible if it was wrong.
+   takedownReason: text("takedown_reason"),
+   takedownAt: timestamp("takedown_at"),
    category:text("category"),
    tags:text("tags"),
    viewCount: integer("view_count").default(0).notNull(),
