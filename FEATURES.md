@@ -615,7 +615,7 @@ sequenceDiagram
     WS->>DB: insert chat_message
     WS-->>V: fan out to everyone in the room
 
-    Note over WS,V: ping every 30s;<br/>no pong → terminate
+    Note over WS,V: ping every 30s<br/>no pong → terminate
 ```
 
 ### First principles
